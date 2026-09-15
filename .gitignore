@@ -1,0 +1,18 @@
+# OpenCode agent workspace (local tooling, not part of the project)
+.opencode/
+
+# Maven build output
+target/
+
+# Java bytecode
+*.class
+
+# Large ingested masters (pyramids under data/images/0|1 are generated demos)
+data/images/*.tif*
+*.log
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
