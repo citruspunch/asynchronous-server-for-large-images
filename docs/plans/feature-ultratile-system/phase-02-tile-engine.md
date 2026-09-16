@@ -3,7 +3,7 @@ phase: phase-02-tile-engine
 goal: GOAL-002 Ceiling store plus validated import plus strict meta plus 106-tile demos
 status: 'Planned'
 parent: ./overview.md
-version: 1.11
+version: 1.12
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -132,6 +132,15 @@ last_updated: 2026-09-16
   everywhere; canonical-ID gate identical to TASK-002 (regex + range + no
   leading zeros, exit 2) BEFORE any path use; same `.tmp-<id>` recovery +
   ready-no-op + non-ready-quarantine as TASK-002.
+- PRE-DIMENSION GATE (frozen, before any expensive work — the vips path must
+  enforce `MAX_DIM` the way the Java importers do, not validate after the
+  pyramid is built): query `w=$(vipsheader -f width "$src")` and
+  `h=$(vipsheader -f height "$src")` (`vipsheader` ships with libvips — same
+  package as `vips`, no new dependency); if either query fails → stderr +
+  exit 2; if `max(w,h) > MAX_DIM=262144` → stderr "too large" + exit 2
+  BEFORE `dzsave` (an accidentally oversized source must never pay for a
+  full pyramid it will fail afterward; vips is the scalable path so only the
+  dimension ceiling applies here, not `IMPORT_IMAGE_MAX_PIXELS`).
 - FROZEN exact command (portable suffix form — NO `--Q` flag, hence NO
   libvips ≥8.15 requirement; trade-off stated in Notes: suffix mode gives up
   libvips' newer direct-JPEG fast path for version portability):
@@ -204,26 +213,24 @@ last_updated: 2026-09-16
 - Done when: `mvn -q test -Dtest=TileMathTest` green (offline validation
   track).
 
-### TASK-006 — Parity script over ALL shared constants
+### TASK-006 — Parity framework over Java+shell constants (JS deferred)
 
-- Create `NEW scripts/check_const_parity.py` (stdlib, TEST-ONLY): mapping
-  table covering EVERY shared Java↔JS constant, not just four —
-  `TILE↔Config.T`, `MAX_CACHE↔Config.M`, `MAX_DECODE↔Config.D`,
-  `DECODE_QUEUE_MAX_JOBS↔Config.DQ_JOBS`,
-  `DECODE_QUEUE_MAX_BYTES↔Config.DQ_BYTES`,
-  `MAX_TILE_BYTES↔Config.MAX_TILE_BYTES`, `BATCH_CAP↔Config.BATCH_CAP`,
-  `AVG_TILE_SEED↔Config.AVG_TILE_SEED`, `SCALE_MIN↔Config.SCALE_MIN`,
-  `SCALE_MAX↔Config.SCALE_MAX`, `MAGIC 0xAA↔Config.MAGIC`, UTP type codes
-  (`T_CHUNK 0x01`, `T_TILE 0x02`, `T_ABORT 0x03`, `T_END 0x04`,
-  `T_COMMIT 0x05`), `SPAN_CAP`, `GEN_TILE_CAP` where the viewer hard-codes
-  them; plus SHELL duplicates where practical — `tile-size 512` and
-  `Q=85` in `import_vips.sh` vs `Config.T`/Q85, Q85 in `IngestTool`.
-  Parse with regexes, evaluate MiB expressions, non-zero exit + diff on
-  mismatch. (Rule: EITHER a constant is pinned here OR it is removed from
-  `Config`/the viewer — `Config` stays the single source only if the script
-  covers every duplication.)
-- Run `python3 scripts/check_const_parity.py` green.
-- Done when: script green + intentional mismatch (temp edit) fails loud.
+- Create `NEW scripts/check_const_parity.py` (stdlib, TEST-ONLY) as a
+  FRAMEWORK in this phase: mapping table covering the Java↔shell constants
+  available now — `Config.T` vs `tile-size 512` in `import_vips.sh`, Q85 in
+  `import_vips.sh`/`IngestTool` vs the frozen quality, plus every
+  `Config.java` numeric constant the script can parse (tile/cache/decode/
+  budget/seed/scales + UTP magic and type codes + `SPAN_CAP` +
+  `GEN_TILE_CAP`). The JavaScript side CANNOT be pinned here: the real
+  `viewer.js` does not exist until phase-06, so this phase's script takes a
+  frozen `--java-shell-only` flag that checks Java+shell and exits 0 without
+  touching `viewer.js`. (Rule as of this phase: EITHER a Java/shell constant
+  is pinned here OR it is removed from `Config`/the shell — full JS parity
+  is phase-06's completion task, never this phase's green gate.)
+- Run `python3 scripts/check_const_parity.py --java-shell-only` green.
+- Done when: flag-mode green + intentional mismatch (temp edit) fails loud.
+  Full `python3 scripts/check_const_parity.py` (with the JS map) is
+  phase-06 TASK-004's gate, not this phase's.
 
 ## Validation Commands
 
@@ -231,7 +238,7 @@ Offline validation track:
 
 ```sh
 mvn -q test -Dtest=TileMathTest
-python3 scripts/check_const_parity.py
+python3 scripts/check_const_parity.py --java-shell-only
 java -cp target/classes com.ultratile.tiles.IngestTool 0 2048 2048
 java -cp target/classes com.ultratile.tiles.IngestTool 1 4096 4096
 [ "$(find data/images/0 data/images/1 -name '*.jpg' | wc -l)" = "106" ] || { echo "expected 21+85=106 tiles" >&2; exit 1; }
@@ -242,6 +249,7 @@ bash -n scripts/import_vips.sh
 if ./scripts/import_vips.sh dummy-src '../x' 2>/dev/null; then echo "invalid id must fail" >&2; exit 1; else rc=$?; [ "$rc" = "2" ] || { echo "invalid id must exit 2, got $rc" >&2; exit 1; }; fi
 if ./scripts/import_vips.sh dummy-src '01' 2>/dev/null; then echo "leading-zero id must fail" >&2; exit 1; else rc=$?; [ "$rc" = "2" ] || { echo "leading-zero id must exit 2, got $rc" >&2; exit 1; }; fi
 grep -q "tile-size 512" scripts/import_vips.sh && grep -q "Q=85" scripts/import_vips.sh || { echo "shell tile-size/Q drifted" >&2; exit 1; }
+grep -q "vipsheader" scripts/import_vips.sh || { echo "vips pre-dimension gate missing" >&2; exit 1; }
 ```
 
 ## Notes for Implementer

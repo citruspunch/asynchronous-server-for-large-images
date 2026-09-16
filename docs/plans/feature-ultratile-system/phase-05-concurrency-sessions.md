@@ -3,7 +3,7 @@ phase: phase-05-concurrency-sessions
 goal: GOAL-005 Coalesced-slot sessions plus teardown plus stale-vs-invalid
 status: 'Planned'
 parent: ./overview.md
-version: 1.11
+version: 1.12
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -36,7 +36,9 @@ last_updated: 2026-09-16
       checks `closed` immediately after EVERY wake (permit OR spurious) and
       exits emitting nothing; a dispatcher-side fatal I/O closes the socket
       first, which wakes the reader; idle sessions terminate BOTH threads
-      with no COMMIT required; coordinated Close; immediate I/O/EOF abort;
+      with no COMMIT required; frozen `failSession` Close-frame sequence +
+      `onPeerClose` echo (TASK-001 — "1002 close" always means Close frame
+      first); immediate I/O/EOF abort;
       no deadlines by design.
   - **REQ-009**: COMMIT builds the COMPLETE immutable center-first `work`
     list OFF-queue FIRST, attaches it, publishes `sealed=true` last, then
@@ -154,6 +156,22 @@ last_updated: 2026-09-16
   `writeFully()`, advancing `transferred` by bytes written; EOF before the
   advertised length → fatal teardown (never a short TILE); writer NEVER
   touches generation state (pure byte pump under the lock).
+- FROZEN closing sequence `failSession(code, reason)` — the ONLY way a
+  deterministic protocol violation tears down a healthy socket: FIRST cancel
+  application work (mark canceled/closed intent so the dispatcher emits
+  nothing further), THEN serialize one Close control frame through
+  `writeControl()` (opcode 0x8, FIN=1, 2-byte big-endian code 1002/1003/1009
+  + optional UTF-8 reason, unmasked, single frame), THEN `closeSession()`.
+  Saying "1002 close" anywhere in this phase MEANS this three-step sequence
+  with code 1002 on the wire — never a bare socket close. The ONLY exception
+  is fatal underlying I/O (write itself throws / socket already dead), where
+  the frame is impossible and the implementation proceeds directly to
+  `closeSession()`.
+- FROZEN peer-Close handling `onPeerClose(code)`: a received Close frame is
+  answered with a Close echo through `writeControl()` (same code if it is a
+  valid RFC 6455 code, else 1002) when this endpoint has not already sent
+  one, THEN `closeSession()` — per RFC 6455 §5.5.1 an endpoint receiving a
+  Close that has not sent one MUST send a Close response before closing.
 - `closeSession()` (frozen): atomically set `closed`, close the socket
   (wakes a blocked reader), AND release the dispatcher permit (wakes
   `readyPermit.acquire()`); dispatcher checks `closed` after EVERY wake.
@@ -162,10 +180,15 @@ last_updated: 2026-09-16
 ### TASK-002 — SessionCoordinator
 
 - Create `NEW src/main/java/com/ultratile/ws/SessionCoordinator.java` around
-  `GenerationState{reqId,imageId,zoom,lodMode==0,
+  `GenerationState{reqId,imageId,zoom,lodMode,
   requested:LinkedHashSet<String>(reader-owned, pre-seal only),
   work:List<TileReq>(immutable, attached at seal),sent,skipped,
   sealed(volatile),canceled(volatile),inFlight}` + `TileReq{state,x,y}`.
+  Sealed-EMPTY generations carry the frozen sentinel `zoom=-1, lodMode=-1`
+  ("no viewport" — the COMMIT wire bytes contain no zoom/LOD, so the state
+  MUST NOT invent semantic values the client never sent; the dispatcher
+  walks zero tiles and never reads these fields; the sentinel MUST never be
+  interpreted as LOD 0).
 - Session: `AtomicReference<GenerationState> active` (nullable) +
   `AtomicLong lastReqIdSeen` (0) + `rejectedReqIds: LinkedHashSet<Long>`
   (insertion-ordered, reader-owned, NO-EVICT: `purgeStale()` drops only
@@ -191,7 +214,7 @@ last_updated: 2026-09-16
 - `onViewportChunk(v)` — FROZEN order:
   1. Parse u32→`long` (`toUnsignedLong`); shape-check (lengths, MAGIC, type).
   2. `purgeStale()`; then FROZEN rejected-check FIRST —
-     `rejectedReqIds.contains(reqId)` → INVALID→1002 close (BEFORE any
+     `rejectedReqIds.contains(reqId)` → INVALID→`failSession(1002)` (BEFORE any
      acceptance logic; closes the bad-9→valid-9 resurrection hole).
   3. History relation: `reqId==active.reqId` → append-case (metadata-match
      else INVALID→1002; `!sealed` else INVALID→1002 post-seal chunk; dedupe;
@@ -205,12 +228,16 @@ last_updated: 2026-09-16
      alive. On success → validate-before-supersede (mark old canceled,
      install new state), advance seen, attach chunk.
 - `onCommit(c)` — FROZEN order: parse → rejected-check (`contains(reqId)` →
-  INVALID→1002) → matching-active → seal (match→attach built work; empty →
-  `work=List.of()`, seal, publish through the SAME coalesced slot) →
+  INVALID→`failSession(1002)`) → matching-active → seal (match→attach built
+  work; empty → `work=List.of()` with the `zoom=-1, lodMode=-1` sentinel,
+  seal, publish through the SAME coalesced slot) →
   `reqId<=seen` non-matching → STALE-ignore (stale COMMITs never close) →
-  genuinely newer: FULL-validate (image/zoom/LOD known; emptiness is legal);
-  on failure → INVALID→1002 IMMEDIATELY (invalid-newer COMMIT — never
-  record-and-ignore: COMMIT is terminal and the waiter has no other
+  genuinely newer: validate imageId-KNOWN via the registry + reqId/session
+  rules (rejected-check already done; seen-ordering; NOT zoom/LOD — a COMMIT
+  carries only `(imageId,reqId)` and an empty generation has no viewport, so
+  "image/zoom/LOD known" is an impossible phrase here); emptiness is legal;
+  on failure → INVALID→`failSession(1002)` IMMEDIATELY (invalid-newer COMMIT
+  — never record-and-ignore: COMMIT is terminal and the waiter has no other
   resolution); on success with empty work → install sealed-empty + advance
   seen (dispatcher sends END 0/0 + CAS-clears).
 - `onAbort(a)`: `(imageId,reqId)` must match `active` else STALE-ignore
@@ -231,9 +258,10 @@ last_updated: 2026-09-16
   `AA 05`→8B commit; `AA 03`→8B abort; `AA` bad len→1002.
 - STALE semantic →WARNING keep-alive (v1.8's blanket keep-alive is SPLIT:
   only stale stays silent); INVALID semantic (TASK-002 rules)
-  →deterministic 1002 close with FINE log (no UTP ERROR packet — the close
+  →`failSession(1002)` with FINE log (no UTP ERROR packet — the Close frame
   IS the error signal; the browser's `END-or-epochCancel-or-wsClose`
-  awaiter resolves via `wsClose`, never hangs); text→1003; oversize→1009.
+  awaiter resolves via `wsClose`, never hangs); text→`failSession(1003)`;
+  oversize→`failSession(1009)`; peer Close → `onPeerClose` echo + teardown.
 - FINE logs. `sameOriginHttp` normalized helper.
 - Done when: TASK-005 helper →101 and TASK-004 green.
 
@@ -288,6 +316,15 @@ last_updated: 2026-09-16
     257th unique → rejected. Minimal-length: synthetic `126`-form frame with
     length 124 →1002; synthetic `127`-form frame with length 1000 (<65536)
     →1002; minimal 126/127 forms (126 and 65536) accepted.
+  - Close-frame wire assertions (frozen `failSession`/`onPeerClose` — every
+    "→1002/1003/1009" above MEANS a Close control frame on the wire): stub
+    `WsWriter` recording control frames; each invalid vector asserts the
+    captured frame has opcode 0x8 + the exact 2-byte code (1002 for protocol
+    violations, 1003 for text, 1009 for oversize) AND that the Close write
+    precedes `closeSession()` (frame bytes exist before the socket stub
+    closes); peer-Close vector (inject valid Close 1000 with no prior server
+    Close) asserts a 1000 echo frame before teardown; invalid-code peer
+    Close → echo carries 1002.
 - Done when: `mvn -q test` green (offline validation track).
 
 ### TASK-005 — ws_handshake_check.py helper (FILE-013)
@@ -298,9 +335,16 @@ last_updated: 2026-09-16
   connection — a correct 101 has fewer than 12 lines and never EOFs, so the
   v1.9 `head -12` form hangs), asserts 101 +
   `Upgrade`/`Connection`/`Accept`/`Sec-WebSocket-Protocol`, then closes.
-- Flags `--expect {101,400}` + repeatable `--extra-header "Name: value"`
-  cover the singleton/subprotocol negative probes deterministically
-  (dup-Key→400, missing-subprotocol→400, version-12→400+advertise).
+- Flags: `--expect {101,400}` + repeatable `--extra-header "Name: value"`
+  (ADDS a field line alongside the base headers) + `--version {13,12}`
+  (default 13; REPLACES the single base `Sec-WebSocket-Version` value —
+  negotiation is tested by sending exactly one `12` header, never by
+  stacking a second Version line on top of 13, which would test
+  duplicate-rejection instead). Singleton/duplicate probes:
+  dup-Key→400 (base + one `--extra-header` Key), dup-Version→400 (base 13 +
+  one `--extra-header` Version, even with equal values), missing
+  subprotocol→400 (`--no-subprotocol`), version-12→400+advertise
+  (`--version 12`).
 - Done when: `--expect 101` green against the TASK-003 server; each negative
   probe asserts its expected status (see Validation Commands).
 
@@ -314,7 +358,8 @@ mvn -o -q clean package -DskipTests
 java -jar target/ultratile-1.0.jar & pid=$!; trap 'kill "$pid"' EXIT
 ready=0; for i in $(seq 1 40); do curl -sf http://localhost:8080/healthz && { ready=1; break; } || sleep 2; done; [ "$ready" = "1" ] || { echo "server never ready" >&2; kill "$pid"; exit 1; }
 python3 scripts/ws_handshake_check.py --expect 101 || { echo "handshake helper failed" >&2; kill "$pid"; exit 1; }
-python3 scripts/ws_handshake_check.py --expect 400 --extra-header "Sec-WebSocket-Version: 12" | grep -qi "Sec-WebSocket-Version: 13"
+python3 scripts/ws_handshake_check.py --expect 400 --version 12 | grep -qi "Sec-WebSocket-Version: 13" || { echo "version-negotiation probe failed" >&2; kill "$pid"; exit 1; }
+python3 scripts/ws_handshake_check.py --expect 400 --extra-header "Sec-WebSocket-Version: 13" || { echo "dup-Version probe failed" >&2; kill "$pid"; exit 1; }
 python3 scripts/ws_handshake_check.py --expect 400 --extra-header "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" --extra-header "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" || { echo "dup-Key probe failed" >&2; kill "$pid"; exit 1; }
 python3 scripts/ws_handshake_check.py --expect 400 --no-subprotocol || { echo "missing-subprotocol probe failed" >&2; kill "$pid"; exit 1; }
 kill "$pid"; trap - EXIT
@@ -350,3 +395,12 @@ kill "$pid"; trap - EXIT
 - "No queue" is literal: `rg -in "queueEmpty|QUEUE_CAP|PriorityQueue|priority
   queue" src/main/java/` must print NOTHING after this phase. The
   dispatcher-local `nextIndex` is the drain position.
+- "1002 close" is literal wire bytes: `rg -n "closeSession\(\)" SessionCoordinator.java`
+  must show every deterministic-violation call site going through
+  `failSession` (Close frame first), and the SessionTest Close-frame
+  vectors pin the codes. A bare socket close on a healthy connection is a
+  spec violation, not a shortcut.
+- Empty COMMITs validate imageId + session rules only: any implementation
+  reading zoom/LOD off a COMMIT has invented wire fields — the sentinel
+  (`zoom=-1, lodMode=-1`) exists precisely so the type system, not
+  discipline, prevents treating "no viewport" as LOD 0.

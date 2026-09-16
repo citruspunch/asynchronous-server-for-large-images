@@ -3,7 +3,7 @@ phase: phase-07-protocol-doc-e2e
 goal: GOAL-007 Normative protocol doc plus contract/unit-split E2E
 status: 'Planned'
 parent: ./overview.md
-version: 1.11
+version: 1.12
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -35,7 +35,7 @@ last_updated: 2026-09-16
     completion with triple accounting on the client; no-wrap via the
     allocator + `lastReqIdSeen` (advance-only-on-accept) + no-reset-on-switch
     (one socket across `selectImage`); client bootstrap + ownership machine +
-    epoch cleanup + `receivedKeys`/dup + `serverSkipped` suppression + END
+    epoch cleanup + `receivedKeys`/dup + `serverSkippedThisEpoch` suppression + END
     accounting + END-identity-fatal + netCov/covCov + `BatchState` lifetime +
     wire codec + headroom-budgeted batches; async note + instructor question
     (ASSUMPTION-004, transport-agnostic protocol).
@@ -81,9 +81,14 @@ last_updated: 2026-09-16
   WARNING-ignore) + live rescan.
 - §3 sealed LOD/progressive (LOD-0-only nearest + reserved statement, Z0
   pin, clear-then-clip compositing, effective LOD per-Z recompute,
-  `connectWs`/`selectImage` bootstrap + allocator + viewEpoch + ownership
-  machine + FROZEN epoch cleanup order + `receivedKeys`-as-bookkeeping +
-  `serverSkipped` suppression + triple END accounting + END-identity-fatal +
+  `connectWs`/`selectImage` bootstrap (single-owner image-switch
+  transaction vs separate `newViewIntent()` pan/zoom/resize path) +
+  allocator + viewEpoch + ownership machine + FROZEN epoch cleanup order +
+  per-batch `receivedKeys` (validation only) + epoch-level
+  `receivedThisEpoch`/`serverSkippedThisEpoch` (suppression + `netCov`,
+  reclamation-proof) + exact TILE frame-length equality
+  (`24 + payloadLen`, fatal) + stale-END discard vs current-epoch triple
+  END accounting + END-identity-fatal +
   netCov-vs-covCov (control awaits networkComplete+drain, never
   `covCov==100%`) + `BatchState` lifetime + `expectedKeys` TILE/END
   enforcement + FROZEN receive-pipeline order + wire-codec functions +
@@ -93,15 +98,18 @@ last_updated: 2026-09-16
   `textContent`).
 - §4 packets/offsets (28/8COMMIT/8ABORT/24/16, subprotocol
   `ultratile.utp.v1` + handshake-profile note, freeze/mismatch-invalid,
-  three-way COMMIT via the unified dispatcher path,
+  three-way COMMIT via the unified dispatcher path (empty validation =
+  imageId + session rules only; sealed-empty sentinel `zoom=-1,
+  lodMode=-1`),
   validate-before-supersede + old-cancel-first + active-guard,
   history-before-validation ordering, seen-advancement table (advance:
   first-valid-chunk, valid-newer-empty-COMMIT; record-or-close:
   invalid-newer CHUNK; immediate-close: invalid-newer COMMIT; never:
   same-chunk/matching-COMMIT/ABORT/reject/stale) + no-evict `rejectedReqIds`
   + resurrection regression + stale-vs-invalid split (stale→ignore;
-  invalid→deterministic 1002 — the close IS the error signal, no UTP ERROR
-  packet) + ABORT-match rule + frame-boundary cancel + active CAS-clearing
+  invalid→deterministic 1002 Close frame + teardown — the frame IS the
+  error signal, no UTP ERROR packet; peer Close → echo + teardown per
+  §5.5.1) + ABORT-match rule + frame-boundary cancel + active CAS-clearing
   (dispatcher-only for sealed generations), GEN_TILE_CAP dedupe-aware,
   u32-shape rules, no-wrap/no-reset, FORMAT-1-implemented/2-reserved).
 - §5 session SERVER STATE DIAGRAM + SUPERSESSION SEQUENCE (GenerationState +
@@ -109,13 +117,15 @@ last_updated: 2026-09-16
   ready slot + supersede-replaces-stale + sealed-empty uniformity, 3-point
   checks, `transferTile` + positional zero-fallback + loop + fatal-mid-frame,
   pre-frame gates incl. size, `0x04` rule + no-END-on-cancel, `closeSession`
-  teardown/wakeup (socket + permit, dispatcher `closed`-check), Close
-  coordination, no-deadline scope; NO queue/`queueEmpty` language anywhere).
+  teardown/wakeup (socket + permit, dispatcher `closed`-check), frozen
+  `failSession` Close-frame sequence + peer-Close echo (Close
+  coordination), no-deadline scope; NO queue/`queueEmpty` language anywhere).
 - §6 client OWNERSHIP DIAGRAM + pipelines (bootstrap, one-socket image
   switching, LRU-40+Z0, decode 6/24jobs/4MiB + purge + retry + skipped
   suppression + in-flight suppression + headroom/budget).
-- §7 limits (128+split same-REQ_ID, 1KiB cap, codes + version advertise +
-  singletons + minimal-length 126/127 + 2/4/10, unmasked-server-frames rule,
+- §7 limits (128+split same-REQ_ID, 1KiB cap, codes + Close-frame freeze +
+  version advertise + `--version` override + singletons + minimal-length
+  126/127 + 2/4/10, unmasked-server-frames rule,
   normalized `http://` origin ≤1, fresh `os.urandom(4)` mask note, exact
   Accept derivation, no full-image).
 - §8 concurrency-model note (blocking `SocketChannel` on virtual threads;
@@ -185,16 +195,19 @@ last_updated: 2026-09-16
 
 - Unit-side proofs (no Python): `SessionTest` — v1.10 suite +
   COMMIT-liveness split + history-before-validation + no-evict/purge-on-stale
-  + bad-9-resurrection + positional-`2,0,0,0,0` + dedupe-at-cap +
-  minimal-length + unified-empty-COMMIT (phase-05 TASK-004);
-  `test_viewer.cjs` green (bootstrap/`selectImage`/allocator-closure/
-  wire-codec-vectors/FORMAT-ordering/END-triple/END-identity-fatal/
-  serverSkipped-suppression/netCov-covCov/payloadLen-semantics/avg-reset +
+  + bad-9-resurrection + empty-sentinel + Close-frame codes + peer-Close
+  echo + positional-`2,0,0,0,0` + dedupe-at-cap + minimal-length +
+  unified-empty-COMMIT (phase-05 TASK-004);
+  `test_viewer.cjs` green (bootstrap/single-owner-`selectImage`/
+  no-double-bump/`newViewIntent`/allocator-closure/
+  wire-codec-vectors/TILE-length-equality/FORMAT-ordering/stale-END-discard/
+  END-triple/END-identity-fatal/epoch-sets-suppression/netCov-stability/
+  netCov-covCov/payloadLen-semantics/avg-reset +
   epoch-cleanup/requestable-again/rapid-double-bump, duplicate-TILE,
   BatchState-lifetime, `format=2`-as-unsupported, initial-camera,
   ownership/pending/retry/terminal/END-skipped/headroom/budget/
   expectedKeys/parity-consumed, pan+zoom eviction — phase-06);
-  `check_const_parity.py` green (full map, phase-02 TASK-006).
+  `check_const_parity.py` green (full map incl. JS, phase-06 TASK-004).
 - Tracks: AUTHORITATIVE `./build.sh` (labeled; authoritative track has ZERO
   `mvn`, ZERO Python/Node/curl/rg) + OFFLINE VALIDATION `mvn -o` (labeled),
   readiness loop (loud-fail tails), live registry, 10x parallel E2E with
@@ -216,11 +229,13 @@ last_updated: 2026-09-16
 ### TASK-005 — Two-track rehearsal
 
 - Rehearsal, TWO TRACKS with the frozen names and memberships:
-  - AUTHORITATIVE track (empty cache, JDK-only build/runtime — the ONLY
-    grader-assumable path): `./build.sh` + `java -cp` demos +
+  - AUTHORITATIVE track (empty cache, JDK + standard Unix userland — the
+    ONLY grader-assumable path): `./build.sh` + `java -cp` demos +
     `java -jar` start/stop + MANUAL browser smoke (open the page served by
     the JAR, pick images 0/1, pan/zoom; tiles + HUD update; no console
-    errors). ZERO `mvn`, ZERO Python/Node/curl/rg.
+    errors). ZERO `mvn`, ZERO Python/Node/curl/rg (coreutils/`find`/
+    `unzip`/`grep`/`seq`/`sleep`/`/dev/tcp` allowed — userland, not
+    downloads).
   - OFFLINE VALIDATION track (primed cache + test tooling): `mvn -o -q test`
     + `node scripts/test_viewer.cjs` + `python3 scripts/test_e2e_parser.py`
     + `python3 scripts/check_const_parity.py` + live-server block green
@@ -252,7 +267,7 @@ kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; 
 python3 -c "import socket,sys; s=socket.socket(); s.settimeout(3); rc=s.connect_ex(('localhost',8080)); s.close(); sys.exit(0 if rc!=0 else 1)" || { echo "port 8080 still bound — server leaked" >&2; exit 1; }
 ```
 
-Authoritative track (JDK + manual browser ONLY):
+Authoritative track (JDK + standard Unix userland + manual browser ONLY):
 
 ```sh
 ./build.sh
@@ -274,11 +289,14 @@ kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; 
   healthy conn, masked-server + non-minimal-length rejection live); 127-form
   = offline synthetic parser test (never compressibility luck); Java +
   `test_viewer.cjs` + parity = internal state (seen-poisoning, three-way
-  COMMIT via the unified dispatcher path, COMMIT-liveness,
-  history-before-validation, coalescing, teardown/wakeup, stale-vs-invalid,
-  no-evict rejected set, bootstrap/`selectImage`/allocator/ownership/
-  epoch-cleanup/headroom/BatchState/expectedKeys/receivedKeys/
-  serverSkipped/netCov-covCov/wire-codec, pan+zoom eviction). Forbidden
+  COMMIT via the unified dispatcher path, empty-sentinel, COMMIT-liveness,
+  history-before-validation, coalescing, teardown/wakeup,
+  failSession-Close-codes, peer-Close echo, stale-vs-invalid,
+  no-evict rejected set, bootstrap/single-owner-`selectImage`/
+  no-double-bump/`newViewIntent`/allocator/ownership/
+  epoch-cleanup/epoch-sets/headroom/BatchState/expectedKeys/receivedKeys/
+  TILE-length-equality/stale-END-discard/netCov-stability/netCov-covCov/
+  wire-codec, pan+zoom eviction). Forbidden
   patterns stay named in the report.
 - Self-containedness graded: build (`./build.sh`), start (`server_pid=$!`
   own line + idempotent trap), wait (loud readiness, no sleeps), test,

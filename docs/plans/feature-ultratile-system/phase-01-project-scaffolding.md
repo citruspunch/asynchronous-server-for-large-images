@@ -3,7 +3,7 @@ phase: phase-01-project-scaffolding
 goal: GOAL-001 Exact-pin Maven plus robust build.sh plus compilable stub
 status: 'Planned'
 parent: ./overview.md
-version: 1.11
+version: 1.12
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -22,7 +22,7 @@ last_updated: 2026-09-16
   - **CON-001**: Java 21, Maven exact pins (DEVELOPMENT-ONLY — primed cache;
     never the clean-machine path) + `build.sh` (AUTHORITATIVE:
     `#!/usr/bin/env bash`, `set -euo pipefail`, cleans classes, `cp -a
-    resources/.` empty-safe, JDK-only, committed executable bit).
+    resources/.` empty-safe, JDK + standard userland, committed executable bit).
   - **CON-002**: `Config` single source (incl. `BIND=127.0.0.1`,
     `IMPORT_IMAGE_MAX_DIM=8192`, `IMPORT_IMAGE_MAX_PIXELS=16777216`,
     `REJECTED_CAP=64`, `AVG_TILE_SEED=131072`; NO `QUEUE_CAP`, NO bare
@@ -80,7 +80,7 @@ last_updated: 2026-09-16
   (ASSUMPTION-004) swaps these files, not the protocol.
 - Done when: `mvn -q compile` passes (offline validation track).
 
-### TASK-004 — Authoritative build.sh (JDK-only block)
+### TASK-004 — Authoritative build.sh (JDK + userland block)
 
 - Create `NEW build.sh`: `#!/usr/bin/env bash` + `set -euo pipefail` +
   `rm -rf target/classes` + `mkdir -p target/classes` +
@@ -99,7 +99,9 @@ last_updated: 2026-09-16
 
 ## Validation Commands
 
-Authoritative track — JDK and bash ONLY (no Maven, Node, Python, curl):
+Authoritative track — JDK + standard Unix userland ONLY (bash, coreutils,
+`find`, `unzip`, `grep`, `seq`, `sleep`, and the bash `/dev/tcp` probe —
+no downloaded dependencies; no Maven, Node, Python, curl, rg):
 
 ```sh
 [ -x build.sh ] || { echo "build.sh not executable" >&2; exit 1; }
@@ -129,8 +131,12 @@ server must never start while the first JVM still holds the port.)
 ## Notes for Implementer
 
 - TWO TRACKS with frozen names and frozen memberships: the AUTHORITATIVE
-  track (JDK + bash builtins ONLY — `/dev/tcp` is a bash builtin, not an
-  external dependency) and the OFFLINE VALIDATION track (primed Maven cache
+  track (JDK + standard Unix userland — `build.sh` itself uses `find`,
+  `cp`, `rm`, `mkdir`, and the validation block uses `unzip`, `grep`,
+  `seq`, `sleep` plus the bash-builtin `/dev/tcp` probe; none of these
+  needs downloading, so all are allowed here; Maven/Node/Python/curl/rg
+  are offline-validation-path tooling, never assumed here) and the
+  OFFLINE VALIDATION track (primed Maven cache
   + Node/Python/curl/rg). No validation block may mix them without saying
   which track it belongs to. Phase-07's rehearsal runs both explicitly
   labeled.

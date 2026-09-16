@@ -3,7 +3,7 @@ phase: phase-03-utp-codec
 goal: GOAL-003 Sealed-generation codec 28B/8B/8B/24B/16B round-trips
 status: 'Planned'
 parent: ./overview.md
-version: 1.11
+version: 1.12
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -73,7 +73,10 @@ last_updated: 2026-09-16
 - Offsets as v1.6 (28B viewport, 8B commit/abort, 24B header with LEN@20-23,
   16B end); throw on MAGIC/type/len/TILE_SIZE/LOD(≠0)/span/LEN-gate/shape.
 - Empty COMMIT legal (phase-05 unified dispatcher path: sealed-empty
-  `work=List.of()` through the coalesced slot; asserted in SessionTest via
+  `work=List.of()` through the coalesced slot, with the sealed-empty state
+  carrying the frozen `zoom=-1, lodMode=-1` sentinel — zoom/LOD are absent
+  on the COMMIT wire bytes, so the state MUST NOT invent semantic values
+  the client never sent; asserted in SessionTest via
   the dispatched END, never a direct reader write).
 - Done when: `mvn -q test -Dtest=UtpCodecTest` passes (offline validation
   track).

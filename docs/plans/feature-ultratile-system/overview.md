@@ -1,6 +1,6 @@
 ---
 goal: UltraTile UTP/1.0 system — Java 21 tiling server + offline viewer + protocol doc
-version: 1.11
+version: 1.12
 date_created: 2026-09-15
 last_updated: 2026-09-16
 status: 'Planned'
@@ -45,7 +45,8 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
 - Client: one WS per page (`connectWs()`), subprotocol bootstrap, per-image
   selection (`selectImage()`) preserving REQ_ID continuity. Ownership
   needed → pending-network → received → cached, with epoch cleanup on EVERY
-  intent, `receivedKeys` network bookkeeping, epoch-scoped `serverSkipped`
+  intent, `receivedKeys` network bookkeeping, epoch-level
+  `receivedThisEpoch`/`serverSkippedThisEpoch`
   suppression, and `BatchState` lifetime rules. Visual coverage (`covCov`)
   is tracked separately from network done-ness (`netCov`); control flow
   awaits `networkComplete` + decode drain, never `covCov == 100%`.
@@ -95,7 +96,14 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     state after sending END — the ONLY lifecycle that clears a sealed
     generation, including sealed-empty ones; reader CAS-clears iff still the
     ABORT-matched state; supersede overwrites.
-  - Close coordination as v1.6; I/O/EOF aborts immediately. No deadlines by
+  - FROZEN closing handshake: every deterministic protocol close serializes
+    an actual Close control frame (`WsWriter.writeControl()`, opcode 0x8,
+    2-byte code 1002/1003/1009 + optional UTF-8 reason) BEFORE `closeSession()`
+    tears down the socket — cancel application work → write Close → then
+    `closeSession()`; the ONLY exception is fatal underlying I/O where the
+    frame cannot be written. A peer-sent Close is answered with a Close echo
+    (same code if valid, else 1002) before teardown, per RFC 6455 §5.5.1.
+    I/O/EOF aborts immediately. No deadlines by
     design. Transport isolated to `net/`+`ws/` — tile store, UTP packets,
     session rules, viewer survive a selector/`AsynchronousServerSocketChannel`
     swap.
@@ -123,36 +131,51 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   clear-then-clip full-bitmap compositing.
 - **REQ-006**: LRU-40; Z0 pinned; intermediates opportunistic; decode ≤6
   in-flight + queue jobs≤24 AND bytes≤4MiB (distinct names); per-intent
-  `viewEpoch`; `BatchState{reqId,epoch,imageId,zoom,expectedKeys,
-  receivedKeys,serverSkipped:Set,networkComplete,canceled}` with FROZEN
-  lifetime (reclaim a current-epoch state when `networkComplete &&
-  decodeRefs==0`; retain canceled previous-epoch states only while that
-  epoch is the immediate predecessor — a third epoch drops them).
+  `viewEpoch`; `BatchState{reqId,epoch,imageId,zoom,expectedKeys:Set,
+  receivedKeys:Set,networkComplete,canceled}` — `receivedKeys` is
+  PER-GENERATION validation state (END triple accounting + duplicate
+  detection within that reqId). HUD/suppression history lives OUTSIDE
+  batches in epoch-level `receivedThisEpoch:Set` +
+  `serverSkippedThisEpoch:Set` (populated on every receipt/END, cleared
+  wholesale on `newViewEpoch()` — BatchState reclamation NEVER shrinks
+  displayed transport history). FROZEN lifetime (reclaim a current-epoch
+  state when `networkComplete && decodeRefs==0`; retain canceled
+  previous-epoch states only while that epoch is the immediate
+  predecessor — a third epoch drops them). The bare name `serverSkipped`
+  MUST NOT exist anywhere (epoch set or nothing).
   - Every received TILE's `(image,z,x,y)` MUST be in `expectedKeys` with
     matching image/zoom else discard+counter.
   - DUPLICATE TILE for an already-`receivedKeys` key → drop + `dupTiles++`
     (wire payload bytes still counted; no second decode).
-  - FROZEN END accounting: a valid END MUST satisfy ALL THREE —
+  - FROZEN END accounting: parse → `classify(reqId)` FIRST. A STALE/old-epoch
+    END (unknown reqId, or reqId from a superseded epoch) is discarded +
+    `staleEnds++`, connection alive — the server may legitimately send an
+    old END before processing a supersession while the browser has already
+    advanced (TILEs already classify stale; END gets the same concept).
+    ONLY a current-epoch END takes the strict path: its `(imageId,reqId)`
+    MUST match a live batch else PROTOCOL-FATAL (`endIdentityFatal++`,
+    Close 1002, fail waiters), and it MUST satisfy ALL THREE —
     `sent + skipped == expectedKeys.size()` AND
     `sent == receivedKeys.size()` AND
     `skipped == expectedKeys.size() - receivedKeys.size()`
     (totals alone let a duplicate mask a missing tile; TCP ordering means
     every preceding TILE has arrived before END). Violation is
-    PROTOCOL-FATAL: `endCountMismatch++`, close the socket, fail every
+    PROTOCOL-FATAL: `endCountMismatch++`, Close 1002, fail every
     waiter — never count-and-continue.
-  - END's `(imageId,reqId)` MUST match a live batch — a wrong-image END is
-    PROTOCOL-FATAL (close the socket / fail the client) so no waiter hangs.
-  - `receivedKeys` is STRICTLY network bookkeeping (receipt + duplicate
-    detection). Visual coverage is separate: `netCov = receivedKeys.size +
-    serverSkipped.size` (network done-ness, well-defined from the two sets)
+  - `receivedKeys` (per-batch) is STRICTLY network bookkeeping (receipt +
+    duplicate detection + END accounting). Visual coverage is separate:
+    `netCov = receivedThisEpoch.size + serverSkippedThisEpoch.size`
+    (epoch-level network done-ness — stable across BatchState reclamation)
     vs `covCov = cachedTargetKeys / neededTargetKeys` (pixels on screen;
     retry/decode-pending/received-undecoded NEVER count). Control flow
     awaits `networkComplete` + decode resolution/drain; `covCov` is
     observational/HUD state, never a gate for later work.
-  - On END, unreceived expected keys become server-skipped: `unreceived =
-    expectedKeys - receivedKeys` are added to the epoch-scoped
-    `serverSkipped` set (part of suppression), and their `pending` entries
-    are removed. `serverSkipped` is cleared on `newViewEpoch()`.
+  - On a current-epoch END, unreceived expected keys become server-skipped:
+    `unreceived = expectedKeys - receivedKeys` are added to
+    `serverSkippedThisEpoch` (part of suppression), and their `pending`
+    entries removed. Every TILE receipt also adds its key to
+    `receivedThisEpoch` (idempotent set add alongside the per-batch
+    `receivedKeys.add`).
   - REQ_IDs come ONLY from the `createReqAllocator()` closure (return
     current, then increment; start at 1 per WS; if allocation would pass
     `0xFFFFFFFE`, reconnect and restart at 1 — no-wrap is a call-site
@@ -164,13 +187,19 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     current-batch expected tile OR `format!=1` on such a tile →
     epoch-scoped `terminalFailed` in suppression; END resolves unreceived
     expected as server-skipped.
-  - FROZEN receive pipeline order — structural parse → wire-byte accounting
-    → `classify(reqId)` → image/zoom/`expectedKeys` membership → duplicate
-    check → `pending.delete` → THEN format/admission/decode interpretation
-    (only a valid current-batch expected tile may touch `terminalFailed`).
-  - FROZEN epoch cleanup on EVERY `newViewEpoch()`: clear old epoch's
-    `retryNeeded` + `terminalFailed` + `serverSkipped`, remove old-epoch
-    `pending` entries, cancel old awaiters, purge queued decode payloads.
+  - FROZEN receive pipeline order — structural parse (incl. exact TILE
+    frame-length equality `message.byteLength === 24 + payloadLen`, checked
+    BEFORE any accounting — short/long frames are PROTOCOL-FATAL via
+    `tileLenMismatch++` + Close 1002, never receipt-counted) → wire-byte
+    accounting → `classify(reqId)` → image/zoom/`expectedKeys` membership →
+    duplicate check → `pending.delete` → THEN format/admission/decode
+    interpretation (only a valid current-batch expected tile may touch
+    `terminalFailed`).
+  - FROZEN epoch cleanup on EVERY `newViewEpoch()`: bump epoch FIRST, cancel
+    old awaiters, remove old-epoch `pending` entries, clear old epoch's
+    `retryNeeded` + `terminalFailed` + `serverSkippedThisEpoch` +
+    `receivedThisEpoch`, purge queued (not in-flight) decode payloads, move
+    old `BatchState`s to the retained-canceled window.
     A tile that terminal-failed in E is requestable again in E+1.
   - Decode accepted iff mapped epoch === currentViewEpoch. Headroom gate +
     dynamic budget as v1.8; `avgTileBytes` uses the `rxBytes` quantity and
@@ -180,10 +209,20 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     loaded page (`ws://${location.host}/ws`, same-origin so `--bind 0.0.0.0`
     deployments pass the server's own Origin-vs-Host rule); assert
     `ws.protocol === "ultratile.utp.v1"`; `ws.binaryType = "arraybuffer"`;
-    await `open` before any UTP send. `selectImage(id)` reuses the session
-    socket and preserves REQ_ID continuity (imageId is on the wire precisely
-    so one session switches images); only a genuine WS reconnect resets the
-    allocator to 1.
+    await `open` before any UTP send. `selectImage(id)` is the SOLE owner of
+    the image-switch transaction, executed EXACTLY ONCE per switch —
+    `sendAbort(old)` where applicable → `newViewEpoch()` → clear
+    image-specific cache/bitmaps + discard pre-decode buffers → `fetch`
+    info + reset camera to the frozen initial view + reset `avgTileBytes` →
+    `allocReqId()` + pin Z0 (chunks+COMMIT via the wire codec). The picker
+    `onchange` handler calls ONLY `selectImage(newId)` (no separate epoch
+    bump/clear/reset/pin — the v1.11 flow double-bumped the epoch and could
+    pin two Z0 generations with the clear landing between them).
+    Pan/zoom/resize use a SEPARATE `newViewIntent()` path (epoch bump +
+    headroom-gated budgeted batches; no cache clear, no camera reset, no
+    `avgTileBytes` reset). REQ_ID continuity is preserved across switches
+    (imageId is on the wire precisely so one session switches images); only
+    a genuine WS reconnect resets the allocator to 1.
   - `viewer.js` duplicates Java constants EXPLICITLY with
     `scripts/check_const_parity.py` pinning EVERY shared Java↔JS constant to
     `Config.java` (tile/cache/decode/budget/seed/scales + UTP magic and
@@ -208,7 +247,10 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   - `0x05` 8B `>BBHI` (three-way COMMIT — newer-empty installs
     sealed-empty `work=List.of()` through the SAME coalesced slot; the
     dispatcher sends its END; "immediate" means no tile work, never a
-    reader-side END).
+    reader-side END; empty-generation validation is imageId + reqId/session
+    rules ONLY — zoom/LOD are absent on the wire and the sealed-empty state
+    carries the `zoom=-1, lodMode=-1` sentinel, never a semantic value the
+    client never sent).
   - `0x03` 8B `>BBHI` (cancel needs matching `(imageId,reqId)` — unknown
     ABORT ignored as stale, never advances seen; terminal, no END).
   - `0x02` 24B `>BBHBBHIIII` (LEN u32 + ≤`MAX_TILE_BYTES`).
@@ -223,13 +265,14 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   - FROZEN stale-vs-invalid: STALE (ignore + WARNING, keep alive) =
     below-seen non-matching, unknown-ABORT, stale COMMITs, superseded
     non-active traffic, post-clear duplicates; INVALID (deterministic 1002
-    close, no hang) = chunk/COMMIT violating the CURRENT active generation
+    Close control frame + teardown, no hang) = chunk/COMMIT violating the
+    CURRENT active generation
     (metadata mismatch, post-seal chunk, duplicate COMMIT while sealed) or
     chunk/COMMIT for a reqId in `rejectedReqIds`; invalid-newer CHUNK
     (fails validation, reqId > seen, touches no active state) = ignore +
     WARNING + RECORD in `rejectedReqIds`, connection stays alive
     (anti-poisoning; its later COMMIT hits the rejected rule and closes);
-    invalid-newer COMMIT = deterministic 1002 IMMEDIATELY (COMMIT is the
+    invalid-newer COMMIT = deterministic 1002 Close frame IMMEDIATELY (COMMIT is the
     terminal client message — ignoring it leaves the browser waiting for
     END/epochCancel/wsClose forever).
   - FROZEN rejected-set discipline: BEFORE accepting ANY new-generation
@@ -289,7 +332,8 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   u32 discipline everywhere as v1.8.
 - **SEC-001**: Validate id/Z/coords/`TILE_SIZE==512`/LOD==0/span/
   `GEN_TILE_CAP` (dedupe-aware)/u32-shape (see REQ-009); client subtracts
-  cached∪pending∪decode-queued∪in-flight∪terminalFailed∪serverSkipped
+  cached∪pending∪decode-queued∪in-flight∪terminalFailed∪
+  serverSkippedThisEpoch
   (epoch), same-Z row-runs, dynamically-budgeted batches, COMMIT; server
   dedupes; no dispatch queue exists.
 - **SEC-002**: Bind `Config.BIND` default `127.0.0.1:8080` (`--bind 0.0.0.0`
@@ -306,7 +350,7 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   <126 →1002; `127` form decoding to <65536 →1002).
 - **CON-001**: Java 21, Maven (exact pins, DEVELOPMENT-ONLY — primed cache)
   + `build.sh` (AUTHORITATIVE clean-machine build: bash, `set -euo
-  pipefail`, cleans classes, empty-safe copy, JDK-only; committed
+  pipefail`, cleans classes, empty-safe copy, JDK + standard userland; committed
   executable).
 - **CON-002**: `Config` single source: `BIND=127.0.0.1`, `PORT=8080`,
   `T=512`, `M=40`, `D=6`, `DQ_JOBS=24`, `DQ_BYTES=4MiB`, `MAGIC=0xAA`,
@@ -401,9 +445,12 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   history-before-validation, coalesced ready slot, `closeSession` wakeup,
   unified dispatcher END path).
 - **FILE-008**: `NEW src/main/resources/web/viewer.js` — `connectWs()` +
-  `selectImage()` + allocator closure + wire codec + viewEpoch +
-  `BatchState` (+`serverSkipped`) + ownership machine + epoch cleanup +
-  netCov/covCov split + headroom-budgeted batches + compositing (exposes
+  `selectImage()` (sole image-switch owner) + `newViewIntent()` +
+  allocator closure + wire codec (incl. exact TILE frame-length check) +
+  viewEpoch + `BatchState` (per-generation, no skipped set) + epoch-level
+  `receivedThisEpoch`/`serverSkippedThisEpoch` + stale-END discard +
+  ownership machine + epoch cleanup + netCov/covCov split +
+  headroom-budgeted batches + compositing (exposes
   `globalThis.UltraTile`).
 - **FILE-009**: `NEW docs/protocol/UTP-1.0.md` — SOLE NORMATIVE protocol
   specification (soft target ~300 lines; content over squeezing).
@@ -411,41 +458,48 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   (test-only; app Node-free).
 - **FILE-011**: `NEW scripts/test_e2e_parser.py` — stdlib synthetic WS parser
   self-test with direction split + minimal-length vectors (test-only).
-- **FILE-012**: `NEW scripts/check_const_parity.py` — stdlib full
-  Java/JS/shell shared-constant parity check (test-only).
+- **FILE-012**: `NEW scripts/check_const_parity.py` — stdlib
+  Java/JS/shell shared-constant parity check (test-only; created in
+  phase-02 as a Java+shell framework, completed in phase-06 with the JS
+  map — full green required phase-06, never phase-02).
 - **FILE-013**: `NEW scripts/ws_handshake_check.py` — stdlib raw-socket
   upgrade probe reading exactly through `\r\n\r\n` (test-only).
-- Verified ground truth: v1.10 plans (8 files, all `version: 1.10`, zero
-  placeholders — but four cells literally contained a copied truncation
-  marker, fixed by the v1.11 subsection reformat); impl files `NEW`.
+- Verified ground truth: v1.11 plans (8 files, all `version: 1.11`, zero
+  placeholders, zero lines >1000 chars after the subsection reformat);
+  impl files `NEW`.
 
 ## 6. Testing
 
 - **TEST-001 (two tracks)**:
-  - AUTHORITATIVE track (empty cache; assumes a JDK and NOTHING else — no
-    Maven, Node, Python, curl, or ripgrep): `./build.sh` + `java -cp` demo
-    generation + `java -jar` start/stop + manual browser smoke (open the
-    page, pan/zoom, observe tiles + HUD). All scripted assertions live in
-    the other track.
+  - AUTHORITATIVE track (empty cache; assumes a JDK + standard Unix
+    userland ONLY — bash, coreutils, `find`, `unzip`, `grep`, `seq`,
+    `sleep`, and the bash `/dev/tcp` probe; NO downloaded dependencies:
+    no Maven, Node, Python, curl, or ripgrep): `./build.sh` + `java -cp`
+    demo generation + `java -jar` start/stop + manual browser smoke (open
+    the page, pan/zoom, observe tiles + HUD). All scripted assertions live
+    in the other track.
   - OFFLINE VALIDATION track (primed Maven cache + Node/Python/curl/rg test
     tooling, all usable disconnected): `mvn -o -q test` green (codec incl.
     LOD-0-only, ceiling, relative-path resolvers, GenerationState
-    seal-slot/three-way/unified-empty/active-clear/duplicate-stale/
-    history-before-validation/stale-vs-invalid/COMMIT-liveness/
-    rejectedReqIds-no-evict/bad-9-resurrection/minimal-length/
-    dedupe-aware-cap/mismatch/seen-rule/poisoning/supersede-cancel/no-END/
-    coalescing/teardown-wakeup/frame-boundary-cancel/positional-fallback,
-    ID canonicalization, demo repair, writer serialization + `writeFully`,
+    seal-slot/three-way/unified-empty/empty-sentinel/active-clear/
+    duplicate-stale/history-before-validation/stale-vs-invalid/
+    COMMIT-liveness/rejectedReqIds-no-evict/bad-9-resurrection/
+    minimal-length/dedupe-aware-cap/mismatch/seen-rule/poisoning/
+    supersede-cancel/no-END/coalescing/teardown-wakeup/
+    close-frame-codes/peer-close-echo/frame-boundary-cancel/
+    positional-fallback, ID canonicalization, demo repair,
+    vipsheader-pre-dim-gate, writer serialization + `writeFully`,
     transferTo `2,0,2` + `2,0,0,0,0`-then-positional-fallback + partial +
     persistent-zero-fallback + fatal-after-start, WS matrix incl.
-    singletons/subprotocol-restriction/version-advertise, half-open/empty,
-    no-wrap via the allocator closure, viewer bootstrap/ownership/
-    epoch-cleanup/pending/retry/terminal/serverSkipped/END-skipped/
-    receivedKeys/dup/END-exact-accounting/END-identity-fatal/
-    netCov-covCov/BatchState-lifetime/headroom/budget/expectedKeys/
-    FORMAT-ordering/wire-codec-vectors/parity, meta id-equality/
-    canonical-name/canonical-dirname/bounds, ImageIO pre-decode caps incl.
-    the 4097×4097 pixel-cap-only vector).
+    singletons/subprotocol-restriction/version-advertise/version-override,
+    half-open/empty, no-wrap via the allocator closure, viewer bootstrap/
+    single-owner-selectImage/no-double-bump/ownership/epoch-cleanup/
+    pending/retry/terminal/epoch-sets/END-skipped/stale-END-discard/
+    receivedKeys/dup/TILE-length-equality/END-exact-accounting/
+    END-identity-fatal/netCov-stability/netCov-covCov/BatchState-lifetime/
+    headroom/budget/expectedKeys/FORMAT-ordering/wire-codec-vectors/
+    parity-full, meta id-equality/canonical-name/canonical-dirname/bounds,
+    ImageIO pre-decode caps incl. the 4097×4097 pixel-cap-only vector).
 - **TEST-002**: HTTP probes (OFFLINE VALIDATION track only): `curl`
   static/info (+405 bodyless-POST with `Allow: GET`; 400 for
   POST+`Content-Length: 1` and POST+`Transfer-Encoding: chunked` — framing
@@ -495,9 +549,12 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   limitation + `--bind` opt-in for LAN (FD exhaustion by hostile peers out
   of scope, stated plainly).
 - **ASSUMPTION-001**: `build.sh` + `java` is THE grader-assumable path
-  (JDK-only). Maven, Node, Python, curl, and ripgrep are
-  offline-validation-path tooling that MUST NOT appear in any authoritative
-  block; needs confirmation of port 8080.
+  (JDK + standard Unix userland — authoritative blocks freely use bash,
+  coreutils, `find`, `unzip`, `grep`, `seq`, `sleep`, and `/dev/tcp`;
+  they MUST NOT use Maven, Node, Python, curl, or ripgrep).
+  Maven, Node, Python, curl, and ripgrep are offline-validation-path
+  tooling that MUST NOT appear in any authoritative block; needs
+  confirmation of port 8080.
 - **ASSUMPTION-002**: `libvips` absent on grader — needs confirmation;
   default needs no vips (synthetic + ImageIO fallback cover the demo).
 - **ASSUMPTION-003**: Node available for JS tests — TEST-ONLY; needs
@@ -515,13 +572,13 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
 
 - RFC 6455 (subprotocol negotiation — single-vs-list occurrence, unmasked
   server frames, fresh mask per frame, frag/control, 2/4/10 headers,
-  MINIMAL-LENGTH encoding rule, codes 1002/1003/1009, version advertise,
-  exact Accept); RFC 9110/9112 (generic-method request line, token, OWS,
+  MINIMAL-LENGTH encoding rule, codes 1002/1003/1009, §5.5.1 Close handshake
+  incl. the Close-echo rule, version advertise, exact Accept); RFC 9110/9112 (generic-method request line, token, OWS,
   obs-fold rejection, no pre-colon whitespace, absolute-form authority,
   GET/405, Host multiplicity, body rules); libvips dzsave (`depth onetile`
   = pyramid down to one tile, `onetile` vs `one`, n=0 smallest,
   `skip_blanks -1` disables blank skipping, `_files/` output tree, `.jpg[Q]`
-  suffix portability); `FileChannel.transferTo` short/zero-transfer +
+  suffix portability, `vipsheader` pre-dimension gate); `FileChannel.transferTo` short/zero-transfer +
   position-invariance (positional-read fallback); `ImageReader`
   dimension-before-decode + complete-image `read()` semantics;
   `SocketChannel` one-reader/one-writer + partial writes; Java 21
