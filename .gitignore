@@ -16,3 +16,7 @@ data/images/*.tif*
 .vscode/
 *.iml
 .DS_Store
+
+# Node presentation (deps installable via npm, dist rebuilt via build)
+node_modules/
+presentation/dist/
