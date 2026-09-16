@@ -3,7 +3,7 @@ phase: phase-07-protocol-doc-e2e
 goal: GOAL-007 Normative protocol doc plus contract/unit-split E2E
 status: 'Planned'
 parent: ./overview.md
-version: 1.13
+version: 1.14
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -89,9 +89,11 @@ last_updated: 2026-09-16
   (validation only) + epoch-level `receivedThisEpoch`/
   `serverSkippedThisEpoch` (suppression + union-cardinality `netCov`,
   reclamation-proof, no double-count) + exact TILE frame-length equality
-  (`24 + payloadLen`, fatal) + stale-END discard vs current-epoch triple
-  END accounting + END-identity-fatal + browser-close 4002 (script can
-  never send 1002) +
+  (`24 + payloadLen`, fatal) + stale-TILE discard with socket OPEN (valid
+  stale TILEs are the frame-boundary race, never fatal) + stale-END
+  discard vs current-epoch triple END accounting + END-identity-fatal +
+  browser-close 4002 (script can never send 1002; server echoes 4002 as a
+  generic private-use peer code, no UTP semantics) +
   netCov-vs-covCov (control awaits networkComplete+drain, never
   `covCov==100%`) + `BatchState` lifetime + `expectedKeys` TILE/END
   enforcement + FROZEN receive-pipeline order + wire-codec functions +
@@ -113,7 +115,9 @@ last_updated: 2026-09-16
   invalid→deterministic 1002 Close frame + teardown — the frame IS the
   error signal, no UTP ERROR packet (1003 valid-text /
   1007 bad-UTF-8 / 1009 oversize on the same `failSession` path; peer
-  Close → three-way echo — same / 1002 / EMPTY, never 1005 — per §5.5.1) + ABORT-match rule + frame-boundary cancel + active CAS-clearing
+  Close → cancel-first + three-way echo — same (incl. private-use 4002,
+  echoed with no UTP semantics) / 1002 / EMPTY, never 1005 — per §5.5.1;
+  in-flight TILE may finish, no new TILE starts) + ABORT-match rule + frame-boundary cancel + active CAS-clearing
   (dispatcher-only for sealed generations), GEN_TILE_CAP dedupe-aware,
   u32-shape rules, no-wrap/no-reset, FORMAT-1-implemented/2-reserved).
 - §5 session SERVER STATE DIAGRAM + SUPERSESSION SEQUENCE (GenerationState +
@@ -123,8 +127,9 @@ last_updated: 2026-09-16
   pre-frame gates incl. size, `0x04` rule + no-END-on-cancel, `closeSession`
   teardown/wakeup (socket + permit in the `closed`-CAS winner ONLY —
   `failSession` never pre-sets `closed`; dispatcher `closed`-check),
-  frozen `failSession` Close-frame sequence + three-way peer-Close echo
-  (Close coordination), no-deadline scope; NO queue/`queueEmpty` language anywhere).
+  frozen `failSession` Close-frame sequence + cancel-first three-way
+  peer-Close echo (in-flight TILE finishes, no new TILE starts; Close
+  coordination), no-deadline scope; NO queue/`queueEmpty` language anywhere).
 - §6 client OWNERSHIP DIAGRAM + pipelines (bootstrap, one-socket image
   switching, LRU-40+Z0, decode 6/24jobs/4MiB + purge + retry + skipped
   suppression + in-flight suppression + headroom/budget).
@@ -202,14 +207,15 @@ last_updated: 2026-09-16
 - Unit-side proofs (no Python): `SessionTest` — v1.10 suite +
   COMMIT-liveness split + history-before-validation + no-evict/purge-on-stale
   + bad-9-resurrection + empty-sentinel + Close-frame codes
-  (1002/1003/1007/1009) + three-way peer-Close echo incl. empty (never
-  1005) + closeSent/closed-split under throwing writer +
+  (1002/1003/1007/1009) + three-way peer-Close echo incl. 4002-echo (no
+  UTP semantics) and empty (never 1005) + cancel-first no-new-TILE
+  during-transfer + closeSent/closed-split under throwing writer +
   positional-`2,0,0,0,0` + dedupe-at-cap + minimal-length +
   unified-empty-COMMIT (phase-05 TASK-004);
   `test_viewer.cjs` green (bootstrap/epoch-guarded-`selectImage`/A→B-race/
   no-double-bump/`newViewIntent`/allocator-closure/4002-browser-close/
   wire-codec-vectors/complete-message-golden/TILE-length-equality/
-  FORMAT-ordering/stale-END-discard/
+  stale-TILE-discard-socket-OPEN/FORMAT-ordering/stale-END-discard/
   END-triple/END-identity-fatal/epoch-sets-suppression/retry→skip-union/
   netCov-stability/netCov-covCov/payloadLen-semantics/avg-reset +
   epoch-cleanup/requestable-again/rapid-double-bump, duplicate-TILE,
@@ -300,8 +306,8 @@ kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; 
   `test_viewer.cjs` + parity = internal state (seen-poisoning, three-way
   COMMIT via the unified dispatcher path, empty-sentinel, COMMIT-liveness,
   history-before-validation, coalescing, teardown/wakeup,
-  failSession-Close-codes(1002/1003/1007/1009), three-way peer-Close echo,
-  closeSent/closed-split, stale-vs-invalid,
+  failSession-Close-codes(1002/1003/1007/1009), three-way peer-Close echo
+  (incl. 4002/no-semantics/empty/no-new-TILE), closeSent/closed-split, stale-vs-invalid,
   no-evict rejected set, bootstrap/epoch-guarded-`selectImage`/A→B-race/
   no-double-bump/4002-browser-close/`newViewIntent`/allocator/ownership/
   epoch-cleanup/epoch-sets/union-netCov/headroom/BatchState/expectedKeys/
@@ -310,7 +316,8 @@ kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; 
   wire-codec, pan+zoom eviction). Forbidden
   patterns stay named in the report.
 - Self-containedness graded: build (`./build.sh`), start (`server_pid=$!`
-  own line + idempotent trap), wait (loud readiness, no sleeps), test,
+  own line + idempotent trap), wait (loud readiness, short sleeps between
+  probes only — polling, never blind startup timing), test,
   per-child parallel accounting under `child_pid` (the v1.8
   `for pid in $pids` SHADOWED the server PID and `kill "$pid"` murdered a
   Python child instead of the server — never reuse `pid`), `wait` for JVM

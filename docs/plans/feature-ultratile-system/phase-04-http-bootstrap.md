@@ -3,7 +3,7 @@ phase: phase-04-http-bootstrap
 goal: GOAL-004 Strict lexical HTTP plus live metadata
 status: 'Planned'
 parent: ./overview.md
-version: 1.13
+version: 1.14
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -146,7 +146,9 @@ last_updated: 2026-09-16
   in a header value→400; `HTTP/1.0` version→400; malformed request line
   (`GET  /healthz` double space)→400; lowercase `get`→405 (unknown method,
   valid token — NOT 400); `rg https?:// web/` empty.
-- Never `kill %1`, never fixed `sleep`, never silent fall-through, never
+- Never `kill %1`, never blind fixed `sleep` for startup (short sleeps
+  between readiness probes are polling, not startup timing), never silent
+  fall-through, never
   print-without-assert.
 - Done when: full block green (see Validation Commands).
 

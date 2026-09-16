@@ -3,7 +3,7 @@ phase: phase-03-utp-codec
 goal: GOAL-003 Sealed-generation codec 28B/8B/8B/24B/16B round-trips
 status: 'Planned'
 parent: ./overview.md
-version: 1.13
+version: 1.14
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---

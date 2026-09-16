@@ -3,7 +3,7 @@ phase: phase-01-project-scaffolding
 goal: GOAL-001 Exact-pin Maven plus robust build.sh plus compilable stub
 status: 'Planned'
 parent: ./overview.md
-version: 1.13
+version: 1.14
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -28,8 +28,8 @@ last_updated: 2026-09-16
     `REJECTED_CAP=64`, `AVG_TILE_SEED=131072`; NO `QUEUE_CAP`, NO bare
     `IMPORT_IMAGE_MAX`); demos id0 2048 (21) + id1 4096 (85), each ensured
     independently. Node is test-only, never a runtime dep.
-- Prior-phase deps: none (first phase; ground truth v1.10, 8 files at
-  `version: 1.10`).
+- Prior-phase deps: none (first phase; ground truth v1.13, 8 files at
+  `version: 1.13`).
 - Inputs: empty repo. Outputs: exact pins, authoritative `build.sh`,
   compilable stub, ready convention, two-track test story.
 

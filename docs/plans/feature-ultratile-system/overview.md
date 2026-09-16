@@ -1,6 +1,6 @@
 ---
 goal: UltraTile UTP/1.0 system — Java 21 tiling server + offline viewer + protocol doc
-version: 1.13
+version: 1.14
 date_created: 2026-09-15
 last_updated: 2026-09-16
 status: 'Planned'
@@ -107,8 +107,14 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     Close → then `closeSession()`; the ONLY exception is fatal underlying
     I/O where the frame cannot be written. A peer-sent Close is answered
     with a Close echo before teardown, per RFC 6455 §5.5.1: same code if
-    valid, 1002 if invalid, EMPTY Close (no status code) if the peer sent
-    none — the internal "1005 = no code" value MUST NEVER go on the wire.
+    valid (incl. private-use codes like a browser-sent 4002 — echoed, never
+    interpreted), 1002 if invalid, EMPTY Close (no status code) if the peer
+    sent none — the internal "1005 = no code" value MUST NEVER go on the
+    wire. `onPeerClose` takes the same frame-boundary stop discipline as
+    `failSession`: mark the active generation canceled FIRST (no NEW TILE
+    may start once shutdown is known; an already-started TILE may finish —
+    RFC 6455 permits completing the current message before the Close
+    response), then CAS `closeSent`, echo, `closeSession()`.
     I/O/EOF aborts immediately. No deadlines by
     design. Transport isolated to `net/`+`ws/` — tile store, UTP packets,
     session rules, viewer survive a selector/`AsynchronousServerSocketChannel`
@@ -261,8 +267,12 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     `tileLenMismatch`) closes with `ws.close(4002, shortReason)` (short
     ASCII reason, ≤123 bytes) — script CANNOT send 1002 (`ws.close(1002)`
     throws `InvalidAccessError`; only 1000/3000–4999 are legal). 4002 is
-    endpoint-local (the server never emits or parses it) and therefore
-    deliberately OUTSIDE the `check_const_parity.py` map. Server-detected
+    viewer-local SEMANTICALLY: the server assigns it no UTP meaning and
+    defines no `Config` constant for it — but its generic RFC 6455 Close
+    parser accepts 4002 as a valid private-use peer code and echoes it
+    like any valid code (phase-05 three-way echo). 4002 is therefore
+    deliberately OUTSIDE the `check_const_parity.py` map (no SHARED
+    constant), not outside the wire parser. Server-detected
     RFC/WebSocket violations stay 1002/1003/1007/1009 on a real Close
     frame.
 - **REQ-007**: UTP/1.0 big-endian MAGIC `0xAA`, TILE_SIZE `512`, LOD `0` ONLY
@@ -493,7 +503,7 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   map — full green required phase-06, never phase-02).
 - **FILE-013**: `NEW scripts/ws_handshake_check.py` — stdlib raw-socket
   upgrade probe reading exactly through `\r\n\r\n` (test-only).
-- Verified ground truth: v1.12 plans (8 files, all `version: 1.12`, zero
+- Verified ground truth: v1.13 plans (8 files, all `version: 1.13`, zero
   placeholders, zero lines >1000 chars); impl files `NEW`.
 
 ## 6. Testing
@@ -539,7 +549,8 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   AND duplicate-Host→400 AND TE/CL-probes→400 AND lexical probes
   (pre-colon-space/obs-fold/bare-LF/NUL-value/bad-version/double-space→400),
   every raw probe piped to an asserting `grep`; split-line lifecycle (no
-  AND-list backgrounding, no fixed sleeps).
+  AND-list backgrounding, no blind fixed startup sleeps — short sleeps
+  between readiness probes are polling, not startup timing).
 - **TEST-003**: E2E contract only (OFFLINE VALIDATION track) — subprotocol
   `ultratile.utp.v1` offered + echoed (exact `Sec-WebSocket-Accept` verified
   against the key); fresh `os.urandom(4)` mask per frame; chunks + COMMIT,

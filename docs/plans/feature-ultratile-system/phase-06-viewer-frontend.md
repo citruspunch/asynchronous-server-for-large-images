@@ -3,7 +3,7 @@ phase: phase-06-viewer-frontend
 goal: GOAL-006 Epoch-cleanup viewer plus epoch transport sets plus wire-codec vectors
 status: 'Planned'
 parent: ./overview.md
-version: 1.13
+version: 1.14
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -178,9 +178,11 @@ last_updated: 2026-09-16
   `ws.close(4002, shortReason)` with a short ASCII reason (≤123 bytes).
   Script-sent 1002 is NOT a fallback — `ws.close(1002)` throws
   `InvalidAccessError` (only 1000/3000–4999 are legal from script). 4002
-  is endpoint-local (the server never emits or parses it) and therefore
-  deliberately OUTSIDE the parity map — no `Config.java` counterpart
-  exists or may be added for it.
+  is viewer-local SEMANTICALLY: the server attaches no UTP meaning to it
+  and defines no `Config` constant for it, but its generic Close parser
+  accepts and echoes 4002 as a valid private-use peer code (phase-05).
+  4002 is therefore deliberately OUTSIDE the parity map — no SHARED
+  constant exists or may be added for it.
 - FROZEN `createReqAllocator()`: returns `{allocReqId}` closing over a
   private counter starting at 1; each call returns the current value then
   increments; if the return value would exceed `0xFFFFFFFE`, reconnect first
@@ -205,7 +207,7 @@ last_updated: 2026-09-16
   by receipt and the END derivation in TASK-003 — the ONLY sets these
   concepts live in; a bare `serverSkipped` identifier MUST NOT exist);
   `avgTileBytes` (running mean over `payloadLen`, seed 131072, RESET to
-  seed on image switch); `dupTiles`, `droppedUnexpected`, `staleEnds`,
+  seed on image switch);   `dupTiles`, `droppedUnexpected`, `staleTiles`, `staleEnds`,
   `tileLenMismatch`, `endCountMismatch`, `endIdentityFatal` counters;
   `headroomOk()` + `batchBudget()` as v1.8.
 - `resizeCanvas()` DPR=1; controller + half-open `visibleTileRange(Z)`;
@@ -316,7 +318,12 @@ last_updated: 2026-09-16
      + `ws.close(4002, reason)` + fail waiters, BEFORE any accounting below).
   2. `rxBytes+=payloadLen` immediately (even for discarded/stale/duplicate
      frames; header bytes NEVER counted).
-  3. `classify(reqId)` (unknown→discard; stale-epoch TILE→discard-or-`close()`).
+  3. `classify(reqId)` (unknown reqId→discard + `droppedUnexpected++`;
+     stale/old-epoch TILE→discard + `staleTiles++`, connection stays OPEN —
+     a STRUCTURALLY VALID stale TILE is the expected
+     frame-boundary-cancellation race (server sent before processing the
+     supersession), never a violation; only MALFORMED frames are fatal,
+     and those die in step 1 before classification).
   4. MEMBERSHIP: key `(image,z,x,y)` MUST be in `BatchState.expectedKeys`
      AND `imageId/zoom` MUST match the batch else discard +
      `droppedUnexpected++`.
@@ -345,7 +352,7 @@ last_updated: 2026-09-16
   `clearRect`/fill FIRST, then `save`/world-transform/`clip([0,W)×[0,H))`/
   full-bitmap draws/`restore`.
 - Done when: `node --check` +
-  `grep -q "serverSkippedThisEpoch\|receivedThisEpoch\|connectWs\|selectImage\|newViewIntent\|myEpoch\|AbortController\|infoAbort\|CLOSE_UTP_ERROR\|4002\|encodeViewport\|parseTileHeader\|tileLenMismatch\|staleEnds\|netCov\|covCov" viewer.js` +
+  `grep -q "serverSkippedThisEpoch\|receivedThisEpoch\|connectWs\|selectImage\|newViewIntent\|myEpoch\|AbortController\|infoAbort\|CLOSE_UTP_ERROR\|4002\|encodeViewport\|parseTileHeader\|tileLenMismatch\|staleTiles\|staleEnds\|netCov\|covCov" viewer.js` +
   `! grep -q "serverSkipped[^T]" viewer.js` (bare name extinct outside
   historical notes — see Notes) +
   `! grep -q "ws\.close(1002\|ws\.close()" viewer.js` (browser never
@@ -374,8 +381,10 @@ last_updated: 2026-09-16
   `endCountMismatch`, `tileLenMismatch`) asserts the stub socket's
   `close` was called with code EXACTLY 4002 (never 1002 — script-sent
   1002 throws; capture args, assert `code===4002` + short string reason);
-  `CLOSE_UTP_ERROR` is NOT in the parity map (assert the parity script's
-  JS map has no 4002 entry — endpoint-local by design).
+  `CLOSE_UTP_ERROR` is NOT in the parity map (assert the parity script
+  defines no SHARED 4002 constant — no-UTP-semantics by design; the
+  server-side 4002 parse/echo is covered by phase-05's peer-Close
+  vectors, not by parity).
 - TILE frame-length vectors (the UTP LEN ↔ WS-message-size relation):
   header with `payloadLen=100` delivered in a 123-byte message → FATAL
   (`tileLenMismatch==1`, socket closed, waiters failed, `rxBytes`
@@ -408,6 +417,16 @@ last_updated: 2026-09-16
   `receivedThisEpoch` already holds the received ones, and a same-epoch
   rebuild does NOT re-request skipped keys (suppression), while the NEXT
   epoch MAY.
+- Stale-TILE race (frame-boundary cancel on the wire): register/complete a
+  generation in E, bump to E+1 via `newViewEpoch()`, then deliver a
+  STRUCTURALLY VALID E TILE (exact `24 + payloadLen` length, member of E's
+  `expectedKeys`) → assert discard (`staleTiles==1`, no decode, no
+  `pending` touch, no `receivedThisEpoch`/batch-`receivedKeys` add) AND
+  the stub socket still OPEN (`readyState===OPEN`, `close` never called)
+  AND current-epoch work unaffected (a subsequent E+1 TILE admits
+  normally). The vector's TILE MUST pass `parseTileHeader` — malformed
+  fatality lives in step 1; this proves classification is lenient, not
+  the parser.
 - netCov/covCov split: received-but-undecoded + retry keys count in
   `netCov`, NOT in `covCov`; `covCov` computed from cache; progress does
   NOT wait on `covCov==100%` when skips/terminals exist (assert the batch
@@ -476,7 +495,7 @@ node --check src/main/resources/web/viewer.js
 node scripts/test_viewer.cjs
 python3 scripts/check_const_parity.py
 rg -n "https?://|cdn" src/main/resources/web/ || echo "offline-clean"
-grep -n "allocReqId\|BatchState\|viewEpoch\|myEpoch\|AbortController\|infoAbort\|CLOSE_UTP_ERROR\|4002\|rxBytes\|decodedBytes\|terminalFailed\|serverSkippedThisEpoch\|receivedThisEpoch\|tileLenMismatch\|staleEnds\|headroomOk\|expectedKeys\|receivedKeys\|newViewEpoch\|newViewIntent\|netCov\|covCov\|binaryType\|connectWs\|selectImage\|encodeViewport\|parseTileHeader\|MAX_CACHE=40\|MAX_TILE_BYTES=2097152\|BATCH_CAP=30\|effectiveLOD" src/main/resources/web/viewer.js
+grep -n "allocReqId\|BatchState\|viewEpoch\|myEpoch\|AbortController\|infoAbort\|CLOSE_UTP_ERROR\|4002\|rxBytes\|decodedBytes\|terminalFailed\|serverSkippedThisEpoch\|receivedThisEpoch\|tileLenMismatch\|staleTiles\|staleEnds\|headroomOk\|expectedKeys\|receivedKeys\|newViewEpoch\|newViewIntent\|netCov\|covCov\|binaryType\|connectWs\|selectImage\|encodeViewport\|parseTileHeader\|MAX_CACHE=40\|MAX_TILE_BYTES=2097152\|BATCH_CAP=30\|effectiveLOD" src/main/resources/web/viewer.js
 ```
 
 Authoritative track (manual browser smoke — no scripted assertions):

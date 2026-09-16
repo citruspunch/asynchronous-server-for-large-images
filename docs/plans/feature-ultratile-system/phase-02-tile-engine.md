@@ -3,7 +3,7 @@ phase: phase-02-tile-engine
 goal: GOAL-002 Ceiling store plus validated import plus strict meta plus 106-tile demos
 status: 'Planned'
 parent: ./overview.md
-version: 1.13
+version: 1.14
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---

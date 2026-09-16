@@ -3,7 +3,7 @@ phase: phase-05-concurrency-sessions
 goal: GOAL-005 Coalesced-slot sessions plus teardown plus stale-vs-invalid
 status: 'Planned'
 parent: ./overview.md
-version: 1.13
+version: 1.14
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -177,11 +177,18 @@ last_updated: 2026-09-16
   frame (unsupported data) →1003; INVALID UTF-8 payload (text or Close
   reason) →1007; oversize fragment →1009.
 - FROZEN peer-Close handling `onPeerClose(codeOrEmpty)`: a received Close
-  frame is answered with a Close echo through `writeControl()` when this
-  endpoint has not already sent one (`closeSent` CAS), THEN
-  `closeSession()` — per RFC 6455 §5.5.1 an endpoint receiving a Close
-  that has not sent one MUST send a Close response before closing. Echo
-  rule (frozen three-way): peer sent a VALID code → echo that same code;
+  frame takes the same frame-boundary stop discipline as `failSession` —
+  FIRST mark the active generation canceled (no NEW TILE may start once
+  shutdown is known; an already-started TILE may finish, and the echo waits
+  for that frame boundary — RFC 6455 permits completing the current message
+  before the Close response, but the plan initiates no further application
+  traffic), THEN CAS `closeSent`, echo through `writeControl()` when this
+  endpoint has not already sent one, THEN `closeSession()` — per RFC 6455
+  §5.5.1 an endpoint receiving a Close that has not sent one MUST send a
+  Close response before closing. Echo rule (frozen three-way): peer sent a
+  VALID code → echo that same code (validity is PURE RFC 6455 — protocol
+  codes 1000–1011 plus private-use 3000–4999, so a browser-sent 4002 echoes
+  as 4002 with NO UTP semantics attached and no `Config` constant);
   peer sent an INVALID code → echo 1002; peer sent NO status code (the
   legal empty Close; internally "1005 = no code") → echo an EMPTY Close
   with no payload. 1005 MUST NEVER appear on the wire in either direction
@@ -280,7 +287,8 @@ last_updated: 2026-09-16
   awaiter resolves via `wsClose`, never hangs); text with valid UTF-8→
   `failSession(1003)`; text (or Close reason) with INVALID UTF-8→
   `failSession(1007)`; oversize→`failSession(1009)`; peer Close →
-  `onPeerClose` three-way echo + teardown (valid→same, invalid→1002,
+  cancel-first + `onPeerClose` three-way echo + teardown (valid→same
+  incl. private-use 4002 with no UTP semantics, invalid→1002,
   empty→empty; never 1005 on the wire).
 - FINE logs. `sameOriginHttp` normalized helper.
 - Done when: TASK-005 helper →101 and TASK-004 green.
@@ -345,13 +353,21 @@ last_updated: 2026-09-16
     `closeSession()` (frame bytes exist before the socket stub closes);
     invalid-UTF-8 text vector (overlong/illegal sequence) → 1007 frame;
     peer-Close vectors with no prior server Close: valid Close 1000 →
-    1000 echo before teardown; invalid code → 1002 echo; EMPTY peer Close
+    1000 echo before teardown; private-use Close 4002 (browser-sent) →
+    4002 echo before teardown, with NO UTP-side effects (no generation
+    lookup, no state change beyond the generic cancel/echo/teardown);
+    invalid code → 1002 echo; EMPTY peer Close
     (no status code) → EMPTY echo (zero-length payload) before teardown,
     and NO frame in either direction ever carries 1005; `closeSent`/
     `closed` split vector: stub `writeControl` to THROW (fatal I/O) →
     `failSession(1002)` still closes the socket AND releases the dispatcher
     permit (teardown is owned by `closeSession()`'s own CAS, never skipped
-    because `failSession` must not pre-set `closed`).
+    because `failSession` must not pre-set `closed`); peer-Close-during-
+    transfer vector: seal a multi-tile generation, let the dispatcher START
+    (not finish) a TILE, then inject a valid peer Close → assert the
+    in-flight TILE's bytes complete (frame boundary honored), NO new TILE
+    starts afterward (next `transferTile` never invoked), the echo Close is
+    emitted, and teardown follows — in that order.
 - Done when: `mvn -q test` green (offline validation track).
 
 ### TASK-005 — ws_handshake_check.py helper (FILE-013)
