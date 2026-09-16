@@ -3,7 +3,7 @@ phase: phase-06-viewer-frontend
 goal: GOAL-006 Epoch-cleanup viewer plus epoch transport sets plus wire-codec vectors
 status: 'Planned'
 parent: ./overview.md
-version: 1.12
+version: 1.13
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -75,22 +75,23 @@ last_updated: 2026-09-16
       before processing a supersession the browser has already moved past;
       TILEs already classify stale and END gets the same concept — the
       v1.11 no-live-batch-fatal rule wrongly killed this legal race).
-      ONLY a current-epoch END takes the strict path: verify
-      `END.(imageId,reqId)` matches a live batch (no match →
-      PROTOCOL-FATAL: `endIdentityFatal++`, `ws.close()`, fail every
-      waiter — never counter-and-continue); THEN the FROZEN triple
-      accounting — `sent + skipped == expectedKeys.size()` AND
-      `sent == receivedKeys.size()` AND
-      `skipped == expectedKeys.size() - receivedKeys.size()` (totals alone
-      let a duplicate TILE mask a missing TILE; TCP ordering guarantees
-      every preceding TILE arrived before END, so any mismatch is a
-      peer bug, not jitter → PROTOCOL-FATAL: `endCountMismatch++`,
-      `ws.close()`, fail waiters); THEN derive server-skipped:
+    ONLY a current-epoch END takes the strict path: verify
+    `END.(imageId,reqId)` matches a live batch (no live match →
+    PROTOCOL-FATAL: `endIdentityFatal++`, `ws.close(4002, reason)`, fail
+    every waiter — never counter-and-continue); THEN the FROZEN
+    triple accounting — `sent + skipped == expectedKeys.size()` AND
+    `sent == receivedKeys.size()` AND
+    `skipped == expectedKeys.size() - receivedKeys.size()` (totals alone
+    let a duplicate TILE mask a missing TILE; TCP ordering guarantees
+    every preceding TILE arrived before END, so any mismatch is a
+    peer bug, not jitter → PROTOCOL-FATAL: `endCountMismatch++`,
+    `ws.close(4002, reason)`, fail waiters); THEN derive server-skipped:
       `unreceived = expectedKeys - receivedKeys` are added to
       `serverSkippedThisEpoch` and their `pending` entries removed
       (never retried this epoch). `netCov` is epoch-level and
-      reclamation-proof: `netCov = receivedThisEpoch.size +
-      serverSkippedThisEpoch.size`.
+      reclamation-proof: `netCov = |receivedThisEpoch ∪
+      serverSkippedThisEpoch|` (union cardinality — a key sitting in both
+      sets after a receive→overflow→retry→skip sequence counts once).
     - DUPLICATE TILE (key ∈ that batch's `receivedKeys`) → drop +
       `dupTiles++` (wire payload bytes still counted in `rxBytes`; exactly
       one decode per key per batch — dup detection is per-generation, while
@@ -132,7 +133,7 @@ last_updated: 2026-09-16
       tileX,tileY,payloadLen}` with full validation INCL. exact
       frame-length equality (`buffer.byteLength === 24 + payloadLen` —
       short/long TILE messages are PROTOCOL-FATAL via `tileLenMismatch++`
-      + `ws.close()`, decided inside the parser before any
+      + `ws.close(4002, reason)`, decided inside the parser before any
       receipt/accounting/decode); `parseEnd(buffer)` →
       `{imageId,reqId,sent,skipped}` with full validation. The sender and
       the `onmessage` path MUST both go through these functions (no
@@ -172,6 +173,14 @@ last_updated: 2026-09-16
   AVG_TILE_SEED=131072,SCALE_MIN/MAX,TAU` (all covered by the TASK-004
   parity map — any change touches `Config.java` + `viewer.js` + the map
   together).
+- Frozen viewer-local `CLOSE_UTP_ERROR=4002` ("UTP protocol error"): the
+  code for EVERY browser-detected UTP violation, sent as
+  `ws.close(4002, shortReason)` with a short ASCII reason (≤123 bytes).
+  Script-sent 1002 is NOT a fallback — `ws.close(1002)` throws
+  `InvalidAccessError` (only 1000/3000–4999 are legal from script). 4002
+  is endpoint-local (the server never emits or parses it) and therefore
+  deliberately OUTSIDE the parity map — no `Config.java` counterpart
+  exists or may be added for it.
 - FROZEN `createReqAllocator()`: returns `{allocReqId}` closing over a
   private counter starting at 1; each call returns the current value then
   increments; if the return value would exceed `0xFFFFFFFE`, reconnect first
@@ -212,9 +221,10 @@ last_updated: 2026-09-16
   duplicates included; length-mismatched frames NEVER reach accounting —
   they are fatal inside `parseTileHeader`),
   `decodedBytes+=payloadLen` only on cache insert;
-  `netCov()` = `receivedThisEpoch.size + serverSkippedThisEpoch.size`
-  (epoch-level — BatchState reclamation cannot move it); `covCov()` =
-  `cachedTargetKeys / neededTargetKeys` from the cache.
+  `netCov()` = union cardinality `new Set([...receivedThisEpoch,
+  ...serverSkippedThisEpoch]).size` (a receive→overflow→retry→skip key
+  sits in both sets and counts ONCE; BatchState reclamation cannot move
+  it); `covCov()` = `cachedTargetKeys / neededTargetKeys` from the cache.
 - `newViewEpoch()` runs the FROZEN cleanup order (bump → cancel awaiters →
   drop old pending → clear old retry/terminal/`serverSkippedThisEpoch`/
   `receivedThisEpoch` → purge stale queued payloads → retire BatchStates).
@@ -239,18 +249,33 @@ last_updated: 2026-09-16
   doing any of these steps before or after:
   1. `sendAbort(oldReqId)` where a live old generation exists (same socket,
      no new WS, no allocator reset);
-  2. `newViewEpoch()` (ONE bump — the frozen TASK-002 cleanup);
-  3. clear image-specific state: cache-`clear()` closing EVERY bitmap,
+  2. `const myEpoch = newViewEpoch()` (ONE bump — the frozen TASK-002
+     cleanup; the returned epoch is this switch's liveness token);
+  3. abort the previous in-flight `/info` fetch (`infoAbort?.abort()`) and
+     start this switch's fetch under a FRESH `AbortController`
+     (`infoAbort = new AbortController()`); `await` the response AND
+     `await` `.json()` — then IMMEDIATELY re-check `myEpoch ===
+     currentViewEpoch`: on mismatch ABANDON SILENTLY (return without
+     touching camera, cache, `avgTileBytes`, or the allocator — A's slow
+     fetch resolving after B's switch must not switch the server back to
+     A; the abort is best-effort cancellation, the epoch check is the
+     correctness gate, because an already-resolved fetch cannot be
+     un-resolved);
+  4. clear image-specific state: cache-`clear()` closing EVERY bitmap,
      discard pre-decode buffers (no `close()` pre-bitmap);
-  4. `fetch(/info)`→N/W/H for the new id; reset cam to the FROZEN initial
-     camera (`camX=W/2, camY=H/2,
+  5. reset cam to the FROZEN initial camera (`camX=W/2, camY=H/2,
      s=clamp(min(Vw/W,Vh/H),SCALE_MIN,SCALE_MAX)`); reset `avgTileBytes`
      to seed;
-  5. `allocReqId()` + pin ONE Z0 generation (chunks+COMMIT via
+  6. `allocReqId()` + pin ONE Z0 generation (chunks+COMMIT via
      `encodeViewport`/`encodeCommit`; `lodMode=0`, `format` expected `1`);
-  await `networkComplete` + decode resolution (NOT `covCov==100%`), then
+  steps 4–6 run SYNCHRONOUSLY after the last guard check (no `await`
+  between check and pin — no second race fits through); then await
+  `networkComplete` + decode resolution (NOT `covCov==100%`), then
   effective-Z work as HEADROOM-GATED sequential budgeted batches sharing
-  `viewEpoch`.
+  `viewEpoch`. General rule for the whole file: EVERY async continuation
+  re-checks its epoch after EVERY `await` and abandoned continuations
+  return without touching shared state (`newViewIntent`'s drain/END
+  awaits resolve via epoch-cancel under the same rule).
 - FROZEN `newViewIntent()` (pan/zoom/resize path — SEPARATE from image
   switching): `sendAbort(old)` where applicable → `newViewEpoch()` → budgeted
   batch loop below. NO cache clear, NO camera reset, NO `avgTileBytes`
@@ -269,9 +294,9 @@ last_updated: 2026-09-16
   - on END → `classify(reqId)` FIRST (stale/old-epoch END → discard +
     `staleEnds++`, keep waiting — a late previous-generation END is legal,
     never fatal) → current-epoch END: identity check (no live match →
-    PROTOCOL-FATAL: `endIdentityFatal++`, `ws.close()`, fail every waiter)
-    → triple accounting (any mismatch → `endCountMismatch++`, `ws.close()`,
-    fail waiters) → derive server-skipped (`unreceived = expectedKeys -
+    PROTOCOL-FATAL: `endIdentityFatal++`, `ws.close(4002, reason)`, fail
+    every waiter) → triple accounting (any mismatch → `endCountMismatch++`,
+    `ws.close(4002, reason)`, fail waiters) → derive server-skipped (`unreceived = expectedKeys -
     receivedKeys` → `serverSkippedThisEpoch` add + `pending.delete`, never
     retried) → loop incl. `retryNeeded` coords as a same-epoch later gen
     AFTER re-checking `headroomOk()`.
@@ -288,7 +313,7 @@ last_updated: 2026-09-16
   1. Structural parse via `parseTileHeader` (incl. `payloadLen` gate AND
      exact frame-length equality `message.byteLength === 24 + payloadLen`
      — short/long TILE frames are PROTOCOL-FATAL via `tileLenMismatch++`
-     + `ws.close()` + fail waiters, BEFORE any accounting below).
+     + `ws.close(4002, reason)` + fail waiters, BEFORE any accounting below).
   2. `rxBytes+=payloadLen` immediately (even for discarded/stale/duplicate
      frames; header bytes NEVER counted).
   3. `classify(reqId)` (unknown→discard; stale-epoch TILE→discard-or-`close()`).
@@ -320,9 +345,11 @@ last_updated: 2026-09-16
   `clearRect`/fill FIRST, then `save`/world-transform/`clip([0,W)×[0,H))`/
   full-bitmap draws/`restore`.
 - Done when: `node --check` +
-  `grep -q "serverSkippedThisEpoch\|receivedThisEpoch\|connectWs\|selectImage\|newViewIntent\|encodeViewport\|parseTileHeader\|tileLenMismatch\|staleEnds\|netCov\|covCov" viewer.js` +
+  `grep -q "serverSkippedThisEpoch\|receivedThisEpoch\|connectWs\|selectImage\|newViewIntent\|myEpoch\|AbortController\|infoAbort\|CLOSE_UTP_ERROR\|4002\|encodeViewport\|parseTileHeader\|tileLenMismatch\|staleEnds\|netCov\|covCov" viewer.js` +
   `! grep -q "serverSkipped[^T]" viewer.js` (bare name extinct outside
-  historical notes — see Notes).
+  historical notes — see Notes) +
+  `! grep -q "ws\.close(1002\|ws\.close()" viewer.js` (browser never
+  attempts a script-sent 1002 or a codeless close for UTP violations).
 
 ### TASK-004 — test_viewer.cjs (bootstrap/ownership/wire-codec vectors)
 
@@ -333,11 +360,22 @@ last_updated: 2026-09-16
   golden (28B, MAGIC at 0, type at 1, big-endian `0x00120304`-style field
   check, LOD byte 0, tileSize 512 at its offset); `encodeCommit`/
   `encodeAbort` golden (8B each, exact offsets); `parseTileHeader` golden
-  (24B incl. LEN@20-23, rejects bad MAGIC/LEN-gate/truncation);
-  `parseEnd` golden (16B, rejects truncation); round-trip
-  encode→parse field equality; sender-path check (capture what the batch
-  sender emits for a known chunk and byte-compare with `encodeViewport`
-  output — proves the send path uses the codec, not a parallel encoder).
+  is a COMPLETE 40-byte TILE message (24B header with `payloadLen=16` at
+  20-23 + 16 payload bytes — header field offsets inspected within it;
+  a bare 24-byte header with LEN>0 is an INCOMPLETE message and MUST
+  reject, since no valid complete message is 24 bytes; 24-byte header-only
+  vectors live in the Java `UtpCodecTest`, where header-only parsing is
+  actually the API); `parseEnd` golden (16B, rejects truncation);
+  round-trip encode→parse field equality; sender-path check (capture what
+  the batch sender emits for a known chunk and byte-compare with
+  `encodeViewport` output — proves the send path uses the codec, not a
+  parallel encoder).
+- Browser close-code vectors: EVERY fatal above (`endIdentityFatal`,
+  `endCountMismatch`, `tileLenMismatch`) asserts the stub socket's
+  `close` was called with code EXACTLY 4002 (never 1002 — script-sent
+  1002 throws; capture args, assert `code===4002` + short string reason);
+  `CLOSE_UTP_ERROR` is NOT in the parity map (assert the parity script's
+  JS map has no 4002 entry — endpoint-local by design).
 - TILE frame-length vectors (the UTP LEN ↔ WS-message-size relation):
   header with `payloadLen=100` delivered in a 123-byte message → FATAL
   (`tileLenMismatch==1`, socket closed, waiters failed, `rxBytes`
@@ -379,12 +417,25 @@ last_updated: 2026-09-16
   `networkComplete`), then assert `netCov` STILL equals N — reclamation
   touches per-batch state only, never `receivedThisEpoch` /
   `serverSkippedThisEpoch`.
+- netCov union (no double-count): receive key K (lands in
+  `receivedThisEpoch`), force decoder-admission overflow so K lands in
+  `retryNeeded`, re-request K in a later same-epoch generation, then have
+  the server SKIP K in that generation's END (lands in
+  `serverSkippedThisEpoch`) → assert `netCov` counts K exactly ONCE
+  (`netCov === |union|`, not the sum).
 - Single-owner image switch: seed image 0 with a live Z0 generation, call
   the picker handler for image 1, assert EXACTLY ONE `newViewEpoch` bump
   (epoch E→E+1, never E+2), exactly ONE Z0 COMMIT emitted for image 1, all
   image-0 bitmaps `close()`d BEFORE the new pin's first TILE is admitted,
   and `avgTileBytes` reset to seed; then drive a pan via `newViewIntent()`
   and assert NO cache clear, NO camera reset, NO `avgTileBytes` reset.
+- Rapid-switch race (A→B, B's `/info` resolves FIRST): stub `fetch` with
+  manually-resolved promises; call `selectImage(A)` (fetch A pending),
+  then `selectImage(B)` (fetch B pending — A's fetch may or may not have
+  been aborted); resolve B's fetch → B pins Z0 (camera = B dims, REQ_ID
+  allocated for B); THEN resolve A's fetch last → assert A abandons
+  (no second epoch bump, no A Z0 COMMIT, no A `allocReqId`, camera still
+  B, no cache touch). Only B may pin Z0.
 - `rxBytes` semantics: TILE with `payloadLen=100` adds exactly 100 (24B
   header excluded); avgTileBytes reset (seed restored on image switch).
 - Epoch cleanup: terminal-fail key K in E → `newViewEpoch()` → K
@@ -425,7 +476,7 @@ node --check src/main/resources/web/viewer.js
 node scripts/test_viewer.cjs
 python3 scripts/check_const_parity.py
 rg -n "https?://|cdn" src/main/resources/web/ || echo "offline-clean"
-grep -n "allocReqId\|BatchState\|viewEpoch\|rxBytes\|decodedBytes\|terminalFailed\|serverSkippedThisEpoch\|receivedThisEpoch\|tileLenMismatch\|staleEnds\|headroomOk\|expectedKeys\|receivedKeys\|newViewEpoch\|newViewIntent\|netCov\|covCov\|binaryType\|connectWs\|selectImage\|encodeViewport\|parseTileHeader\|MAX_CACHE=40\|MAX_TILE_BYTES=2097152\|BATCH_CAP=30\|effectiveLOD" src/main/resources/web/viewer.js
+grep -n "allocReqId\|BatchState\|viewEpoch\|myEpoch\|AbortController\|infoAbort\|CLOSE_UTP_ERROR\|4002\|rxBytes\|decodedBytes\|terminalFailed\|serverSkippedThisEpoch\|receivedThisEpoch\|tileLenMismatch\|staleEnds\|headroomOk\|expectedKeys\|receivedKeys\|newViewEpoch\|newViewIntent\|netCov\|covCov\|binaryType\|connectWs\|selectImage\|encodeViewport\|parseTileHeader\|MAX_CACHE=40\|MAX_TILE_BYTES=2097152\|BATCH_CAP=30\|effectiveLOD" src/main/resources/web/viewer.js
 ```
 
 Authoritative track (manual browser smoke — no scripted assertions):
@@ -446,11 +497,11 @@ kill "$pid"; trap - EXIT
 - `classify(reqId)` is THE v1.7 client bridge; v1.8 added the ownership
   machine; v1.9 added the epoch boundary; v1.10 added bootstrap+ordering;
   v1.11 added the skipped set, triple END accounting, `connectWs` vs
-  `selectImage`, and the wire codec; v1.12 completes the set:
-  single-owner `selectImage()` (no double-bump) vs `newViewIntent()`,
-  stale-END discard, TILE frame-length equality, and epoch-level
-  `receivedThisEpoch`/`serverSkippedThisEpoch` (reclamation-proof `netCov`).
-  Each has dedicated tests.
+  `selectImage`, and the wire codec; v1.12 fixed single-ownership,
+  stale ENDs, Close frames, and epoch sets; v1.13 completes the set:
+  epoch-guarded `selectImage()` (A→B race), browser-close 4002 (script
+  can never send 1002), union `netCov` (no double-count), and the
+  complete-message `parseTileHeader` golden. Each has dedicated tests.
 - `receivedKeys` (per-batch) vs epoch history vs coverage is the v1.12
   conceptual fix: per-generation receipt is a validation fact, epoch sets
   are the transport-history fact, visual coverage is a cache fact.

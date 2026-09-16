@@ -1,6 +1,6 @@
 ---
 goal: UltraTile UTP/1.0 system — Java 21 tiling server + offline viewer + protocol doc
-version: 1.12
+version: 1.13
 date_created: 2026-09-15
 last_updated: 2026-09-16
 status: 'Planned'
@@ -98,11 +98,17 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     ABORT-matched state; supersede overwrites.
   - FROZEN closing handshake: every deterministic protocol close serializes
     an actual Close control frame (`WsWriter.writeControl()`, opcode 0x8,
-    2-byte code 1002/1003/1009 + optional UTF-8 reason) BEFORE `closeSession()`
-    tears down the socket — cancel application work → write Close → then
-    `closeSession()`; the ONLY exception is fatal underlying I/O where the
-    frame cannot be written. A peer-sent Close is answered with a Close echo
-    (same code if valid, else 1002) before teardown, per RFC 6455 §5.5.1.
+    2-byte code 1002/1003/1007/1009 + optional UTF-8 reason) BEFORE
+    `closeSession()` tears down the socket — cancel application work
+    (marking generations canceled + a separate `closeSent` flag so at most
+    one Close is emitted; the `closed` flag is owned SOLELY by
+    `closeSession()` and MUST NOT be set early, or its idempotent
+    CAS-and-return would skip the socket-close/permit-wakeup body) → write
+    Close → then `closeSession()`; the ONLY exception is fatal underlying
+    I/O where the frame cannot be written. A peer-sent Close is answered
+    with a Close echo before teardown, per RFC 6455 §5.5.1: same code if
+    valid, 1002 if invalid, EMPTY Close (no status code) if the peer sent
+    none — the internal "1005 = no code" value MUST NEVER go on the wire.
     I/O/EOF aborts immediately. No deadlines by
     design. Transport isolated to `net/`+`ws/` — tile store, UTP packets,
     session rules, viewer survive a selector/`AsynchronousServerSocketChannel`
@@ -154,18 +160,24 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     advanced (TILEs already classify stale; END gets the same concept).
     ONLY a current-epoch END takes the strict path: its `(imageId,reqId)`
     MUST match a live batch else PROTOCOL-FATAL (`endIdentityFatal++`,
-    Close 1002, fail waiters), and it MUST satisfy ALL THREE —
+    `ws.close(4002, reason)`, fail waiters), and it MUST satisfy ALL THREE —
     `sent + skipped == expectedKeys.size()` AND
     `sent == receivedKeys.size()` AND
     `skipped == expectedKeys.size() - receivedKeys.size()`
     (totals alone let a duplicate mask a missing tile; TCP ordering means
     every preceding TILE has arrived before END). Violation is
-    PROTOCOL-FATAL: `endCountMismatch++`, Close 1002, fail every
-    waiter — never count-and-continue.
+    PROTOCOL-FATAL: `endCountMismatch++`, `ws.close(4002, reason)`, fail
+    every waiter — never count-and-continue. (4002, not 1002: browsers
+    forbid script-sent 1002 — only 1000/3000–4999 are legal from script;
+    4002 = frozen private UTP-protocol-error code for ALL
+    browser-detected violations.)
   - `receivedKeys` (per-batch) is STRICTLY network bookkeeping (receipt +
     duplicate detection + END accounting). Visual coverage is separate:
-    `netCov = receivedThisEpoch.size + serverSkippedThisEpoch.size`
-    (epoch-level network done-ness — stable across BatchState reclamation)
+    `netCov = |receivedThisEpoch ∪ serverSkippedThisEpoch|` (cardinality of
+    the UNION — never the sum: a key received, then decoder-overflowed into
+    `retryNeeded`, then server-skipped in the later retry legally sits in
+    BOTH sets and must count once; epoch-level network done-ness, stable
+    across BatchState reclamation)
     vs `covCov = cachedTargetKeys / neededTargetKeys` (pixels on screen;
     retry/decode-pending/received-undecoded NEVER count). Control flow
     awaits `networkComplete` + decode resolution/drain; `covCov` is
@@ -190,7 +202,7 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   - FROZEN receive pipeline order — structural parse (incl. exact TILE
     frame-length equality `message.byteLength === 24 + payloadLen`, checked
     BEFORE any accounting — short/long frames are PROTOCOL-FATAL via
-    `tileLenMismatch++` + Close 1002, never receipt-counted) → wire-byte
+    `tileLenMismatch++` + `ws.close(4002, reason)`, never receipt-counted) → wire-byte
     accounting → `classify(reqId)` → image/zoom/`expectedKeys` membership →
     duplicate check → `pending.delete` → THEN format/admission/decode
     interpretation (only a valid current-batch expected tile may touch
@@ -211,13 +223,21 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     `ws.protocol === "ultratile.utp.v1"`; `ws.binaryType = "arraybuffer"`;
     await `open` before any UTP send. `selectImage(id)` is the SOLE owner of
     the image-switch transaction, executed EXACTLY ONCE per switch —
-    `sendAbort(old)` where applicable → `newViewEpoch()` → clear
-    image-specific cache/bitmaps + discard pre-decode buffers → `fetch`
-    info + reset camera to the frozen initial view + reset `avgTileBytes` →
-    `allocReqId()` + pin Z0 (chunks+COMMIT via the wire codec). The picker
-    `onchange` handler calls ONLY `selectImage(newId)` (no separate epoch
-    bump/clear/reset/pin — the v1.11 flow double-bumped the epoch and could
-    pin two Z0 generations with the clear landing between them).
+    `sendAbort(old)` where applicable → `newViewEpoch()` (capture the new
+    epoch as `myEpoch`) → abort any in-flight `/info` fetch via a shared
+    `AbortController` and start the new fetch under it → after EVERY
+    `await` (fetch response AND `.json()`), re-check `myEpoch ===
+    currentViewEpoch` and ABANDON silently on mismatch (touch nothing — no
+    camera, no cache, no `allocReqId`) → clear image-specific
+    cache/bitmaps + discard pre-decode buffers → reset camera to the frozen
+    initial view + reset `avgTileBytes` → `allocReqId()` + pin Z0
+    (chunks+COMMIT via the wire codec; the tail after the last guard check
+    is fully synchronous so no second race fits between check and pin).
+    This closes the rapid-switch race where A's slow `/info` resolves after
+    B's and switches the server back to A. The picker `onchange` handler
+    calls ONLY `selectImage(newId)` (no separate epoch bump/clear/reset/pin
+    — the v1.11 flow double-bumped the epoch and could pin two Z0
+    generations with the clear landing between them).
     Pan/zoom/resize use a SEPARATE `newViewIntent()` path (epoch bump +
     headroom-gated budgeted batches; no cache clear, no camera reset, no
     `avgTileBytes` reset). REQ_ID continuity is preserved across switches
@@ -236,6 +256,15 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     exact byte-vector/endian-offset tests in `test_viewer.cjs` — Java UTP
     and Python E2E tests alone cannot prove the browser writes/parses the
     same packets.
+  - Frozen viewer-local `CLOSE_UTP_ERROR = 4002`: EVERY browser-detected
+    UTP violation (`endIdentityFatal`, `endCountMismatch`,
+    `tileLenMismatch`) closes with `ws.close(4002, shortReason)` (short
+    ASCII reason, ≤123 bytes) — script CANNOT send 1002 (`ws.close(1002)`
+    throws `InvalidAccessError`; only 1000/3000–4999 are legal). 4002 is
+    endpoint-local (the server never emits or parses it) and therefore
+    deliberately OUTSIDE the `check_const_parity.py` map. Server-detected
+    RFC/WebSocket violations stay 1002/1003/1007/1009 on a real Close
+    frame.
 - **REQ-007**: UTP/1.0 big-endian MAGIC `0xAA`, TILE_SIZE `512`, LOD `0` ONLY
   (1/2 reserved → reject), FORMAT `1` JPEG implemented (`2` WebP reserved:
   parsed, never emitted); subprotocol `ultratile.utp.v1` REQUIRED (exactly
@@ -464,9 +493,8 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   map — full green required phase-06, never phase-02).
 - **FILE-013**: `NEW scripts/ws_handshake_check.py` — stdlib raw-socket
   upgrade probe reading exactly through `\r\n\r\n` (test-only).
-- Verified ground truth: v1.11 plans (8 files, all `version: 1.11`, zero
-  placeholders, zero lines >1000 chars after the subsection reformat);
-  impl files `NEW`.
+- Verified ground truth: v1.12 plans (8 files, all `version: 1.12`, zero
+  placeholders, zero lines >1000 chars); impl files `NEW`.
 
 ## 6. Testing
 
@@ -486,17 +514,19 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     COMMIT-liveness/rejectedReqIds-no-evict/bad-9-resurrection/
     minimal-length/dedupe-aware-cap/mismatch/seen-rule/poisoning/
     supersede-cancel/no-END/coalescing/teardown-wakeup/
-    close-frame-codes/peer-close-echo/frame-boundary-cancel/
+    close-frame-codes(1002/1003/1007/1009)/peer-close-echo incl. empty-echo/
+    closeSent-vs-closed/frame-boundary-cancel/
     positional-fallback, ID canonicalization, demo repair,
     vipsheader-pre-dim-gate, writer serialization + `writeFully`,
     transferTo `2,0,2` + `2,0,0,0,0`-then-positional-fallback + partial +
     persistent-zero-fallback + fatal-after-start, WS matrix incl.
     singletons/subprotocol-restriction/version-advertise/version-override,
-    half-open/empty, no-wrap via the allocator closure, viewer bootstrap/
-    single-owner-selectImage/no-double-bump/ownership/epoch-cleanup/
+    half-open/empty,     no-wrap via the allocator closure, viewer bootstrap/
+    single-owner-selectImage/epoch-guard-A→B/no-double-bump/4002-browser-close/
+    ownership/epoch-cleanup/
     pending/retry/terminal/epoch-sets/END-skipped/stale-END-discard/
     receivedKeys/dup/TILE-length-equality/END-exact-accounting/
-    END-identity-fatal/netCov-stability/netCov-covCov/BatchState-lifetime/
+    END-identity-fatal/netCov-union-stability/netCov-covCov/BatchState-lifetime/
     headroom/budget/expectedKeys/FORMAT-ordering/wire-codec-vectors/
     parity-full, meta id-equality/canonical-name/canonical-dirname/bounds,
     ImageIO pre-decode caps incl. the 4097×4097 pixel-cap-only vector).
@@ -572,8 +602,9 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
 
 - RFC 6455 (subprotocol negotiation — single-vs-list occurrence, unmasked
   server frames, fresh mask per frame, frag/control, 2/4/10 headers,
-  MINIMAL-LENGTH encoding rule, codes 1002/1003/1009, §5.5.1 Close handshake
-  incl. the Close-echo rule, version advertise, exact Accept); RFC 9110/9112 (generic-method request line, token, OWS,
+  MINIMAL-LENGTH encoding rule, codes 1002/1003/1007/1009, §5.5.1 Close handshake
+  incl. the Close-echo rule and the no-code (1005-internal, never on wire)
+  condition, version advertise, exact Accept); RFC 9110/9112 (generic-method request line, token, OWS,
   obs-fold rejection, no pre-colon whitespace, absolute-form authority,
   GET/405, Host multiplicity, body rules); libvips dzsave (`depth onetile`
   = pyramid down to one tile, `onetile` vs `one`, n=0 smallest,

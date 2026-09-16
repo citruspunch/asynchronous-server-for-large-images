@@ -3,7 +3,7 @@ phase: phase-04-http-bootstrap
 goal: GOAL-004 Strict lexical HTTP plus live metadata
 status: 'Planned'
 parent: ./overview.md
-version: 1.12
+version: 1.13
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---

@@ -3,7 +3,7 @@ phase: phase-01-project-scaffolding
 goal: GOAL-001 Exact-pin Maven plus robust build.sh plus compilable stub
 status: 'Planned'
 parent: ./overview.md
-version: 1.12
+version: 1.13
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---

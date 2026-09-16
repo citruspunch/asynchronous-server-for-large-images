@@ -3,7 +3,7 @@ phase: phase-05-concurrency-sessions
 goal: GOAL-005 Coalesced-slot sessions plus teardown plus stale-vs-invalid
 status: 'Planned'
 parent: ./overview.md
-version: 1.12
+version: 1.13
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -145,7 +145,9 @@ last_updated: 2026-09-16
   else 1002.
 - Reassembly: continuation w/o open→1002; second data opcode mid-frag→1002;
   cumulative frag>1KiB→1009; Close len==1→1002; bad Close code/reason→
-  1002/1007; 64-bit high-bit→1002; text(valid)→1003 downstream; Ping→Pong;
+  1002/1007 (empty Close len==0 is LEGAL — routes to the empty-echo path,
+  never an error); 64-bit high-bit→1002; text(valid)→1003 downstream;
+  text(invalid-UTF-8)→1007 downstream; Ping→Pong;
   server headers exactly 2/4/10B.
 - `WsWriter` (one/session, `ReentrantLock writeLock`): `writeFully(ByteBuffer)`
   primitive; `writeBinary`, `writeControl`,
@@ -158,23 +160,38 @@ last_updated: 2026-09-16
   touches generation state (pure byte pump under the lock).
 - FROZEN closing sequence `failSession(code, reason)` — the ONLY way a
   deterministic protocol violation tears down a healthy socket: FIRST cancel
-  application work (mark canceled/closed intent so the dispatcher emits
-  nothing further), THEN serialize one Close control frame through
-  `writeControl()` (opcode 0x8, FIN=1, 2-byte big-endian code 1002/1003/1009
-  + optional UTF-8 reason, unmasked, single frame), THEN `closeSession()`.
-  Saying "1002 close" anywhere in this phase MEANS this three-step sequence
-  with code 1002 on the wire — never a bare socket close. The ONLY exception
-  is fatal underlying I/O (write itself throws / socket already dead), where
-  the frame is impossible and the implementation proceeds directly to
-  `closeSession()`.
-- FROZEN peer-Close handling `onPeerClose(code)`: a received Close frame is
-  answered with a Close echo through `writeControl()` (same code if it is a
-  valid RFC 6455 code, else 1002) when this endpoint has not already sent
-  one, THEN `closeSession()` — per RFC 6455 §5.5.1 an endpoint receiving a
-  Close that has not sent one MUST send a Close response before closing.
-- `closeSession()` (frozen): atomically set `closed`, close the socket
-  (wakes a blocked reader), AND release the dispatcher permit (wakes
-  `readyPermit.acquire()`); dispatcher checks `closed` after EVERY wake.
+  application work (mark generations canceled + CAS a separate `closeSent`
+  flag so at most one Close is emitted; `failSession` MUST NOT touch the
+  `closed` flag — `closed` is owned SOLELY by `closeSession()`, whose body
+  runs under its own idempotent CAS; setting `closed` early would make that
+  CAS observe "already closed" and SKIP the socket-close/permit-wakeup
+  phase) so the dispatcher emits nothing further, THEN serialize one Close
+  control frame through `writeControl()` (opcode 0x8, FIN=1, 2-byte
+  big-endian code 1002/1003/1007/1009 + optional UTF-8 reason, unmasked,
+  single frame), THEN `closeSession()`. Saying "1002 close" anywhere in
+  this phase MEANS this three-step sequence with code 1002 on the wire —
+  never a bare socket close. The ONLY exception is fatal underlying I/O
+  (write itself throws / socket already dead), where the frame is
+  impossible and the implementation proceeds directly to `closeSession()`.
+  Code map (frozen): protocol/shape violations →1002; valid-UTF-8 text
+  frame (unsupported data) →1003; INVALID UTF-8 payload (text or Close
+  reason) →1007; oversize fragment →1009.
+- FROZEN peer-Close handling `onPeerClose(codeOrEmpty)`: a received Close
+  frame is answered with a Close echo through `writeControl()` when this
+  endpoint has not already sent one (`closeSent` CAS), THEN
+  `closeSession()` — per RFC 6455 §5.5.1 an endpoint receiving a Close
+  that has not sent one MUST send a Close response before closing. Echo
+  rule (frozen three-way): peer sent a VALID code → echo that same code;
+  peer sent an INVALID code → echo 1002; peer sent NO status code (the
+  legal empty Close; internally "1005 = no code") → echo an EMPTY Close
+  with no payload. 1005 MUST NEVER appear on the wire in either direction
+  (it is a wire-representation of absence, not a transmittable code).
+- `closeSession()` (frozen, sole owner of `closed`): `closed`
+  `compareAndSet(false, true)` — the socket close (wakes a blocked reader)
+  AND the dispatcher-permit release (wakes `readyPermit.acquire()`) run
+  INSIDE the CAS-winner branch, exactly once; every other call is a no-op
+  by construction. No path except `closeSession()` writes `closed`.
+  Dispatcher checks `closed` after EVERY wake.
 - Done when: handshake helper (TASK-005) →101.
 
 ### TASK-002 — SessionCoordinator
@@ -260,8 +277,11 @@ last_updated: 2026-09-16
   only stale stays silent); INVALID semantic (TASK-002 rules)
   →`failSession(1002)` with FINE log (no UTP ERROR packet — the Close frame
   IS the error signal; the browser's `END-or-epochCancel-or-wsClose`
-  awaiter resolves via `wsClose`, never hangs); text→`failSession(1003)`;
-  oversize→`failSession(1009)`; peer Close → `onPeerClose` echo + teardown.
+  awaiter resolves via `wsClose`, never hangs); text with valid UTF-8→
+  `failSession(1003)`; text (or Close reason) with INVALID UTF-8→
+  `failSession(1007)`; oversize→`failSession(1009)`; peer Close →
+  `onPeerClose` three-way echo + teardown (valid→same, invalid→1002,
+  empty→empty; never 1005 on the wire).
 - FINE logs. `sameOriginHttp` normalized helper.
 - Done when: TASK-005 helper →101 and TASK-004 green.
 
@@ -317,14 +337,21 @@ last_updated: 2026-09-16
     length 124 →1002; synthetic `127`-form frame with length 1000 (<65536)
     →1002; minimal 126/127 forms (126 and 65536) accepted.
   - Close-frame wire assertions (frozen `failSession`/`onPeerClose` — every
-    "→1002/1003/1009" above MEANS a Close control frame on the wire): stub
-    `WsWriter` recording control frames; each invalid vector asserts the
-    captured frame has opcode 0x8 + the exact 2-byte code (1002 for protocol
-    violations, 1003 for text, 1009 for oversize) AND that the Close write
-    precedes `closeSession()` (frame bytes exist before the socket stub
-    closes); peer-Close vector (inject valid Close 1000 with no prior server
-    Close) asserts a 1000 echo frame before teardown; invalid-code peer
-    Close → echo carries 1002.
+    "→1002/1003/1007/1009" above MEANS a Close control frame on the wire):
+    stub `WsWriter` recording control frames; each invalid vector asserts
+    the captured frame has opcode 0x8 + the exact 2-byte code (1002 for
+    protocol violations, 1003 for valid-UTF-8 text, 1007 for invalid-UTF-8
+    text payload, 1009 for oversize) AND that the Close write precedes
+    `closeSession()` (frame bytes exist before the socket stub closes);
+    invalid-UTF-8 text vector (overlong/illegal sequence) → 1007 frame;
+    peer-Close vectors with no prior server Close: valid Close 1000 →
+    1000 echo before teardown; invalid code → 1002 echo; EMPTY peer Close
+    (no status code) → EMPTY echo (zero-length payload) before teardown,
+    and NO frame in either direction ever carries 1005; `closeSent`/
+    `closed` split vector: stub `writeControl` to THROW (fatal I/O) →
+    `failSession(1002)` still closes the socket AND releases the dispatcher
+    permit (teardown is owned by `closeSession()`'s own CAS, never skipped
+    because `failSession` must not pre-set `closed`).
 - Done when: `mvn -q test` green (offline validation track).
 
 ### TASK-005 — ws_handshake_check.py helper (FILE-013)

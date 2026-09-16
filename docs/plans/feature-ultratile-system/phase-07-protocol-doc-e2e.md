@@ -3,7 +3,7 @@ phase: phase-07-protocol-doc-e2e
 goal: GOAL-007 Normative protocol doc plus contract/unit-split E2E
 status: 'Planned'
 parent: ./overview.md
-version: 1.12
+version: 1.13
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -81,14 +81,17 @@ last_updated: 2026-09-16
   WARNING-ignore) + live rescan.
 - §3 sealed LOD/progressive (LOD-0-only nearest + reserved statement, Z0
   pin, clear-then-clip compositing, effective LOD per-Z recompute,
-  `connectWs`/`selectImage` bootstrap (single-owner image-switch
-  transaction vs separate `newViewIntent()` pan/zoom/resize path) +
-  allocator + viewEpoch + ownership machine + FROZEN epoch cleanup order +
-  per-batch `receivedKeys` (validation only) + epoch-level
-  `receivedThisEpoch`/`serverSkippedThisEpoch` (suppression + `netCov`,
-  reclamation-proof) + exact TILE frame-length equality
+  `connectWs`/epoch-guarded `selectImage` bootstrap (single-owner
+  image-switch with `myEpoch` re-check after every `/info` await +
+  `AbortController` cancel vs separate `newViewIntent()` pan/zoom/resize
+  path; rapid A→B resolves to B only) + allocator + viewEpoch + ownership
+  machine + FROZEN epoch cleanup order + per-batch `receivedKeys`
+  (validation only) + epoch-level `receivedThisEpoch`/
+  `serverSkippedThisEpoch` (suppression + union-cardinality `netCov`,
+  reclamation-proof, no double-count) + exact TILE frame-length equality
   (`24 + payloadLen`, fatal) + stale-END discard vs current-epoch triple
-  END accounting + END-identity-fatal +
+  END accounting + END-identity-fatal + browser-close 4002 (script can
+  never send 1002) +
   netCov-vs-covCov (control awaits networkComplete+drain, never
   `covCov==100%`) + `BatchState` lifetime + `expectedKeys` TILE/END
   enforcement + FROZEN receive-pipeline order + wire-codec functions +
@@ -108,8 +111,9 @@ last_updated: 2026-09-16
   same-chunk/matching-COMMIT/ABORT/reject/stale) + no-evict `rejectedReqIds`
   + resurrection regression + stale-vs-invalid split (stale→ignore;
   invalid→deterministic 1002 Close frame + teardown — the frame IS the
-  error signal, no UTP ERROR packet; peer Close → echo + teardown per
-  §5.5.1) + ABORT-match rule + frame-boundary cancel + active CAS-clearing
+  error signal, no UTP ERROR packet (1003 valid-text /
+  1007 bad-UTF-8 / 1009 oversize on the same `failSession` path; peer
+  Close → three-way echo — same / 1002 / EMPTY, never 1005 — per §5.5.1) + ABORT-match rule + frame-boundary cancel + active CAS-clearing
   (dispatcher-only for sealed generations), GEN_TILE_CAP dedupe-aware,
   u32-shape rules, no-wrap/no-reset, FORMAT-1-implemented/2-reserved).
 - §5 session SERVER STATE DIAGRAM + SUPERSESSION SEQUENCE (GenerationState +
@@ -117,13 +121,15 @@ last_updated: 2026-09-16
   ready slot + supersede-replaces-stale + sealed-empty uniformity, 3-point
   checks, `transferTile` + positional zero-fallback + loop + fatal-mid-frame,
   pre-frame gates incl. size, `0x04` rule + no-END-on-cancel, `closeSession`
-  teardown/wakeup (socket + permit, dispatcher `closed`-check), frozen
-  `failSession` Close-frame sequence + peer-Close echo (Close
-  coordination), no-deadline scope; NO queue/`queueEmpty` language anywhere).
+  teardown/wakeup (socket + permit in the `closed`-CAS winner ONLY —
+  `failSession` never pre-sets `closed`; dispatcher `closed`-check),
+  frozen `failSession` Close-frame sequence + three-way peer-Close echo
+  (Close coordination), no-deadline scope; NO queue/`queueEmpty` language anywhere).
 - §6 client OWNERSHIP DIAGRAM + pipelines (bootstrap, one-socket image
   switching, LRU-40+Z0, decode 6/24jobs/4MiB + purge + retry + skipped
   suppression + in-flight suppression + headroom/budget).
-- §7 limits (128+split same-REQ_ID, 1KiB cap, codes + Close-frame freeze +
+- §7 limits (128+split same-REQ_ID, 1KiB cap, codes 1002/1003/1007/1009 +
+  Close-frame freeze + browser 4002 +
   version advertise + `--version` override + singletons + minimal-length
   126/127 + 2/4/10, unmasked-server-frames rule,
   normalized `http://` origin ≤1, fresh `os.urandom(4)` mask note, exact
@@ -195,14 +201,17 @@ last_updated: 2026-09-16
 
 - Unit-side proofs (no Python): `SessionTest` — v1.10 suite +
   COMMIT-liveness split + history-before-validation + no-evict/purge-on-stale
-  + bad-9-resurrection + empty-sentinel + Close-frame codes + peer-Close
-  echo + positional-`2,0,0,0,0` + dedupe-at-cap + minimal-length +
+  + bad-9-resurrection + empty-sentinel + Close-frame codes
+  (1002/1003/1007/1009) + three-way peer-Close echo incl. empty (never
+  1005) + closeSent/closed-split under throwing writer +
+  positional-`2,0,0,0,0` + dedupe-at-cap + minimal-length +
   unified-empty-COMMIT (phase-05 TASK-004);
-  `test_viewer.cjs` green (bootstrap/single-owner-`selectImage`/
-  no-double-bump/`newViewIntent`/allocator-closure/
-  wire-codec-vectors/TILE-length-equality/FORMAT-ordering/stale-END-discard/
-  END-triple/END-identity-fatal/epoch-sets-suppression/netCov-stability/
-  netCov-covCov/payloadLen-semantics/avg-reset +
+  `test_viewer.cjs` green (bootstrap/epoch-guarded-`selectImage`/A→B-race/
+  no-double-bump/`newViewIntent`/allocator-closure/4002-browser-close/
+  wire-codec-vectors/complete-message-golden/TILE-length-equality/
+  FORMAT-ordering/stale-END-discard/
+  END-triple/END-identity-fatal/epoch-sets-suppression/retry→skip-union/
+  netCov-stability/netCov-covCov/payloadLen-semantics/avg-reset +
   epoch-cleanup/requestable-again/rapid-double-bump, duplicate-TILE,
   BatchState-lifetime, `format=2`-as-unsupported, initial-camera,
   ownership/pending/retry/terminal/END-skipped/headroom/budget/
@@ -291,11 +300,13 @@ kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; 
   `test_viewer.cjs` + parity = internal state (seen-poisoning, three-way
   COMMIT via the unified dispatcher path, empty-sentinel, COMMIT-liveness,
   history-before-validation, coalescing, teardown/wakeup,
-  failSession-Close-codes, peer-Close echo, stale-vs-invalid,
-  no-evict rejected set, bootstrap/single-owner-`selectImage`/
-  no-double-bump/`newViewIntent`/allocator/ownership/
-  epoch-cleanup/epoch-sets/headroom/BatchState/expectedKeys/receivedKeys/
-  TILE-length-equality/stale-END-discard/netCov-stability/netCov-covCov/
+  failSession-Close-codes(1002/1003/1007/1009), three-way peer-Close echo,
+  closeSent/closed-split, stale-vs-invalid,
+  no-evict rejected set, bootstrap/epoch-guarded-`selectImage`/A→B-race/
+  no-double-bump/4002-browser-close/`newViewIntent`/allocator/ownership/
+  epoch-cleanup/epoch-sets/union-netCov/headroom/BatchState/expectedKeys/
+  receivedKeys/TILE-length-equality/complete-message-golden/
+  stale-END-discard/netCov-stability/netCov-covCov/
   wire-codec, pan+zoom eviction). Forbidden
   patterns stay named in the report.
 - Self-containedness graded: build (`./build.sh`), start (`server_pid=$!`
