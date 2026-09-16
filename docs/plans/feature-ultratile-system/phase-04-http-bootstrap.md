@@ -3,7 +3,7 @@ phase: phase-04-http-bootstrap
 goal: GOAL-004 Strict lexical HTTP plus live metadata
 status: 'Planned'
 parent: ./overview.md
-version: 1.14
+version: 1.15
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -49,11 +49,16 @@ last_updated: 2026-09-16
       `Transfer-Encoding` →400; `Content-Length`: zero headers → ok; exactly
       one `0` → ok; exactly one nonzero →400; MORE THAN ONE header →400
       unconditionally, even `0,0`) → method gate (`method.equals("GET")`
-      else `405` + `Allow: GET` + close) → target routing. Consequences
+      else `405` + `Allow: GET` + close) → target routing. INTENTIONAL
+      SUBSET DECISION: EVERY syntactically-valid non-`GET` token maps to
+      405 — RFC 9110 reserves 405 for KNOWN-but-disallowed methods and
+      uses 501 for unrecognized ones; this teaching profile deliberately
+      collapses both to 405 (labeled here, not RFC behavior). Consequences
       pinned by probes: bodyless `POST` →405, but `POST`+`Content-Length:
       1` →400 and `POST`+`Transfer-Encoding: chunked` →400.
-    - `writeFully` loop; exact routes `/`, `/viewer.js`, `/styles.css`,
-      `/api/images`, `/api/images/{id}/info`, `/healthz`, `/ws`;
+  - `writeFully` loop; exact routes `/`, `/viewer.js`, `/styles.css`,
+    `/api/images`, `/api/images/{id}/info` (canonical `{id}` — `01`→404),
+    `/healthz`, `/ws`;
       `Connection: close` except upgraded `/ws`.
     - For `/ws`: same global body gate (TE/any-`CL!=0`/duplicated-CL→400, no
       upgrade); preserve post-header bytes ONLY after bodyless valid upgrade
@@ -110,6 +115,10 @@ last_updated: 2026-09-16
   imports; never hardcoded) via shared `jsonEscape()`;
   `GET /api/images/{id}/info` full `levelsDetail` from the SAME fresh
   snapshot (no stale-`get` window) via the same routine; `no-store`.
+  `{id}` follows the SAME canonical-decimal rule as storage paths
+  (`^[0-9]+$`, no leading zeros except `"0"` itself, 0..65535) —
+  non-canonical spellings (`01`, `+1`, ` 1`) match NO image and return 404
+  (never normalize-and-serve: `01` must not resolve to image 1).
 - `GET /healthz` 200 `OK` ONLY when scan done AND `registry.get(0)` +
   `registry.get(1)` are BOTH valid entries (parsed metadata, not merely
   directories containing `.ready` — a corrupt demo must fail readiness, not
@@ -162,6 +171,8 @@ mvn -o -q clean package -DskipTests
 java -jar target/ultratile-1.0.jar & pid=$!; trap 'kill "$pid"' EXIT
 ready=0; for i in $(seq 1 40); do curl -sf http://localhost:8080/healthz && { ready=1; break; } || sleep 2; done; [ "$ready" = "1" ] || { echo "server never ready" >&2; kill "$pid"; exit 1; }
 curl -s http://localhost:8080/api/images
+curl -s http://localhost:8080/api/images/1/info | grep -q '"z":3' || { echo "info levels missing" >&2; kill "$pid"; exit 1; }
+[ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/images/01/info)" = "404" ] || { echo "non-canonical info id must 404" >&2; kill "$pid"; exit 1; }
 curl -s -X POST http://localhost:8080/api/images -i | grep -E "405|Allow: GET"
 curl -s -X POST -H "Content-Length: 1" --data-binary "x" http://localhost:8080/api/images -i | grep -q "400" || { echo "POST-with-body probe failed" >&2; kill "$pid"; exit 1; }
 printf 'POST /api/images HTTP/1.1\r\nHost: localhost:8080\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n' | python3 -c "import socket,sys; s=socket.create_connection(('localhost',8080)); s.sendall(sys.stdin.buffer.read()); print(s.recv(200).decode(errors='replace').split(chr(13))[0])" | grep -q "400" || { echo "POST-with-TE probe failed" >&2; kill "$pid"; exit 1; }

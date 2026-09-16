@@ -3,7 +3,7 @@ phase: phase-05-concurrency-sessions
 goal: GOAL-005 Coalesced-slot sessions plus teardown plus stale-vs-invalid
 status: 'Planned'
 parent: ./overview.md
-version: 1.14
+version: 1.15
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -73,7 +73,7 @@ last_updated: 2026-09-16
       terminal client message — ignoring it would leave the browser waiting
       for END/epochCancel/wsClose forever; v1.10's record-and-ignore closed
       the chunk hole but left this liveness hole).
-    - 3-point checks; `transferTile` WS `24+fileSize` + looped `transferTo`
+    - 3-point checks; `transferTileIf` WS `24+fileSize` + looped `transferTo`
       with BOUNDED zero-progress fallback (≤3 consecutive `0` returns, then
       POSITIONAL `src.read(dst64k, transferredOffset)` advancing an explicit
       `transferred` offset + `writeFully()` — `transferTo` does NOT move the
@@ -142,22 +142,51 @@ last_updated: 2026-09-16
 - `WsFrame` parser: masked-required→1002; RSV≠0→1002; opcode
   ∈{0x0,0x1,0x2,0x8,0x9,0xA} else 1002; NON-MINIMAL-LENGTH→1002 (`126` form
   decoding to <126; `127` form decoding to <65536); control FIN==1&&len≤125
-  else 1002.
+  else 1002. FROZEN Close-code validator (explicit sets, never an
+  inclusive range): VALID peer codes = {1000,1001,1002,1003,1007,1008,
+  1009,1010,1011,1012,1013,1014} ∪ 3000–4999 (private use, incl. a
+  browser-sent 4002); NON-TRANSMITTABLE/INVALID = 1004, 1005, 1006, 1015,
+  any other value <1000 or in 1016–2999 or ≥5000 (a peer Close carrying
+  one → echo 1002); absent code (len==0) → the empty-echo path, never an
+  error, never 1005 on the wire.
 - Reassembly: continuation w/o open→1002; second data opcode mid-frag→1002;
-  cumulative frag>1KiB→1009; Close len==1→1002; bad Close code/reason→
-  1002/1007 (empty Close len==0 is LEGAL — routes to the empty-echo path,
-  never an error); 64-bit high-bit→1002; text(valid)→1003 downstream;
+  the 1 KiB inbound cap is enforced INCREMENTALLY during accumulation
+  (never buffer past cap + one frame header of headroom): a well-formed
+  frame whose cumulative bytes exceed 1 KiB →1009 WITHOUT allocating or
+  reading the rest of its payload — so a correctly-encoded 65,536-byte
+  client message is still 1009 (minimal-length encoding and the
+  application size limit are SEPARATE concerns; precedence frozen:
+  malformed/non-minimal→1002 first, then well-formed-but-oversize→1009);
+  Close len==1→1002; bad Close code/reason→ 1002/1007 (empty Close len==0
+  is LEGAL — routes to the empty-echo path, never an error); 64-bit
+  high-bit→1002; text(valid)→1003 downstream;
   text(invalid-UTF-8)→1007 downstream; Ping→Pong;
   server headers exactly 2/4/10B.
 - `WsWriter` (one/session, `ReentrantLock writeLock`): `writeFully(ByteBuffer)`
   primitive; `writeBinary`, `writeControl`,
-  `transferTile(TileHeader,FileChannel,size)` = WS header len `24+size` +
-  24B UTP + looped `transferTo(transferred, remaining)` tracking an explicit
+  `transferTileIf(TileHeader,FileChannel,size,sessionView)` returning
+  `STARTED | SKIPPED | SHUTDOWN` = WS header len `24+size` + 24B UTP +
+  looped `transferTo(transferred, remaining)` tracking an explicit
   `transferred` offset + `zeroStreak` counting consecutive `0` returns;
   `zeroStreak>3` → switch to POSITIONAL `src.read(dst64k, transferred)` +
   `writeFully()`, advancing `transferred` by bytes written; EOF before the
   advertised length → fatal teardown (never a short TILE); writer NEVER
-  touches generation state (pure byte pump under the lock).
+  touches generation state EXCEPT reading it for the admission predicate
+  below (pure byte pump under the lock, plus one atomic read).
+- FROZEN lock-admission (closes the Close-vs-TILE race): the dispatcher's
+  `sealed && !canceled && active==state` check is only a FAST-PATH filter.
+  The AUTHORITATIVE admission decision runs INSIDE the writer-lock
+  critical section in `transferTileIf`/`writeEndIf`: acquire `writeLock`,
+  re-check `!closeSent && !closed && !state.canceled && active.get()==state`
+  (END additionally re-checks sealed/drained/inflight0), commit the frame
+  as STARTED, and only then emit its first byte. Outcomes: STARTED (frame
+  committed — bytes flow; dispatcher advances `nextIndex`/counters);
+  SKIPPED (pre-frame state miss with nothing emitted — dispatcher counts
+  `skipped`, exactly today's pre-frame path); SHUTDOWN (`closeSent ||
+  closed` — emit NOTHING, dispatcher stops immediately). Because Close
+  emission also holds `writeLock`, no data frame can start after a Close
+  and no Close can interleave a frame — the check and the first byte are
+  one critical section.
 - FROZEN closing sequence `failSession(code, reason)` — the ONLY way a
   deterministic protocol violation tears down a healthy socket: FIRST cancel
   application work (mark generations canceled + CAS a separate `closeSent`
@@ -175,7 +204,10 @@ last_updated: 2026-09-16
   impossible and the implementation proceeds directly to `closeSession()`.
   Code map (frozen): protocol/shape violations →1002; valid-UTF-8 text
   frame (unsupported data) →1003; INVALID UTF-8 payload (text or Close
-  reason) →1007; oversize fragment →1009.
+  reason) →1007; oversize fragment →1009. Close reasons are capped to the
+  123-byte UTF-8 payload budget (truncate on a UTF-8/char boundary; total
+  Close payload ≤125 bytes — a long reason never breaks the control-frame
+  size rule).
 - FROZEN peer-Close handling `onPeerClose(codeOrEmpty)`: a received Close
   frame takes the same frame-boundary stop discipline as `failSession` —
   FIRST mark the active generation canceled (no NEW TILE may start once
@@ -186,8 +218,10 @@ last_updated: 2026-09-16
   endpoint has not already sent one, THEN `closeSession()` — per RFC 6455
   §5.5.1 an endpoint receiving a Close that has not sent one MUST send a
   Close response before closing. Echo rule (frozen three-way): peer sent a
-  VALID code → echo that same code (validity is PURE RFC 6455 — protocol
-  codes 1000–1011 plus private-use 3000–4999, so a browser-sent 4002 echoes
+  VALID code → echo that same code (validity is EXACTLY the TASK-001
+  validator sets — never an inclusive range: 1004/1005/1006/1015 and
+  1016–2999/≥5000 are NOT valid even though they sit inside "1000–1011"
+  or above it; a browser-sent 4002 is valid private use and echoes
   as 4002 with NO UTP semantics attached and no `Config` constant);
   peer sent an INVALID code → echo 1002; peer sent NO status code (the
   legal empty Close; internally "1005 = no code") → echo an EMPTY Close
@@ -218,7 +252,19 @@ last_updated: 2026-09-16
   (insertion-ordered, reader-owned, NO-EVICT: `purgeStale()` drops only
   entries with `id <= lastReqIdSeen` after every seen-advance; a record
   required while 64 live entries are retained → deterministic 1002 close,
-  never eviction) + `readySlot`/`readyPermit` + `closeSession()` (TASK-001).
+  never eviction) + FROZEN coalesced ready slot
+  (`AtomicReference<GenerationState> readySlot` (nullable) +
+  `Semaphore readyPermit` (0 permits)) + `closeSession()` (TASK-001).
+- FROZEN coalesced publish/take (permits can NEVER accumulate — a naïve
+  set-then-release per COMMIT would bank permits for overwritten states):
+  publish: `old = readySlot.getAndSet(newState); if (old == null)
+  readyPermit.release()` (a newer COMMIT overwriting an unconsumed token
+  releases NOTHING — at most one outstanding permit exists by
+  construction); dispatcher: `for(;;){ readyPermit.acquire();
+  if (closed.get()) exit-emitting-nothing; s = readySlot.getAndSet(null);
+  if (s != null) dispatch(s); }` (the take pairs 1:1 with a null→non-null
+  transition, so a taken state is never null in practice — the null check
+  is defense, not flow).
 - There is NO tile queue and NO `queueEmpty` anywhere: the dispatcher walks
   `work` with a DISPATCHER-LOCAL `nextIndex` (per-dispatch local int — never
   shared, never volatile).
@@ -252,9 +298,13 @@ last_updated: 2026-09-16
      alive. On success → validate-before-supersede (mark old canceled,
      install new state), advance seen, attach chunk.
 - `onCommit(c)` — FROZEN order: parse → rejected-check (`contains(reqId)` →
-  INVALID→`failSession(1002)`) → matching-active → seal (match→attach built
-  work; empty → `work=List.of()` with the `zoom=-1, lodMode=-1` sentinel,
-  seal, publish through the SAME coalesced slot) →
+  INVALID→`failSession(1002)`) → matching-active → seal (match→build the
+  COMPLETE immutable `work` list CENTER-FIRST off-queue — center =
+  union bounding box of ALL chunks' tile ranges
+  (`ccx=(loX+hiX)/2.0`, `ccy=(loY+hiY)/2.0` tile-index space; sort by
+  Manhattan `|x-ccx|+|y-ccy|` asc, then `y`, then `x`) and attach it;
+  empty → `work=List.of()` with the `zoom=-1, lodMode=-1` sentinel,
+  seal, publish via the FROZEN getAndSet coalesced publish) →
   `reqId<=seen` non-matching → STALE-ignore (stale COMMITs never close) →
   genuinely newer: validate imageId-KNOWN via the registry + reqId/session
   rules (rejected-check already done; seen-ordering; NOT zoom/LOD — a COMMIT
@@ -268,12 +318,19 @@ last_updated: 2026-09-16
   (unknown-ABORT, never advances seen); on match → mark canceled +
   `active.compareAndSet(matched,null)`; terminal, no END; NEVER closes the
   tile channel (frame-boundary cancel).
-- Dispatcher loop: `readyPermit.acquire()` → `closed`-check → take
-  `readySlot` → walk `work` from local `nextIndex`: per tile 3-point checks
-  (sealed && !canceled && `active.get()==state`); MISS → SKIPPED pre-frame
-  only (post-start tile failure is fatal); HIT → `transferTile` (TASK-001
-  semantics); after drain with `inFlight==0` → send `0x04`
-  (sent,skipped) → `active.compareAndSet(state,null)`. No END on canceled.
+- Dispatcher loop (frozen): `for(;;){ readyPermit.acquire();
+  if (closed.get()) exit-emitting-nothing; s = readySlot.getAndSet(null);
+  if (s == null) continue; walk s.work from a DISPATCHER-LOCAL nextIndex:`
+  per tile run the 3-point fast-path filter (sealed && !canceled &&
+  `active.get()==state`) — MISS → SKIPPED pre-frame only (post-start tile
+  failure is fatal) — then call `transferTileIf(...)` and OBEY its outcome:
+  STARTED → advance `nextIndex`/counters; SKIPPED → count `skipped`
+  (pre-frame miss confirmed under the lock); SHUTDOWN → stop the loop
+  immediately, emitting nothing further. After drain with `inFlight==0` →
+  `writeEndIf(s, sent, skipped)` (lock-admission: emits `0x04` only if the
+  full END rule still holds under the lock) → on true,
+  `active.compareAndSet(s,null)`. No END on canceled; no frame of any kind
+  after SHUTDOWN. `}`
 - Done when: `SessionTest` green (TASK-004 vectors).
 
 ### TASK-003 — Read-loop wiring
@@ -341,9 +398,45 @@ last_updated: 2026-09-16
     EOF early → fatal teardown; `format=2` TILE never emitted by any server
     path (rg + behavior).
   - Dedupe-at-cap: 256 unique keys then duplicate existing → accepted, then
-    257th unique → rejected. Minimal-length: synthetic `126`-form frame with
-    length 124 →1002; synthetic `127`-form frame with length 1000 (<65536)
-    →1002; minimal 126/127 forms (126 and 65536) accepted.
+    257th unique → rejected. Minimal-length vs size-limit precedence:
+    synthetic `126`-form frame with length 124 →1002 (non-minimal);
+    synthetic `127`-form frame with length 1000 (<65536) →1002
+    (non-minimal); minimal `126`-form length 126 → accepted (fits 1 KiB);
+    minimal `127`-form length 65536 →1009 (WELL-FORMED but over the 1 KiB
+    inbound cap — "65536 accepted" lives ONLY in the phase-07
+    server→client parser self-test, where large TILEs are legal; here the
+    client→server direction rejects); 65536-vector asserts BOUNDED
+    buffering (feed the 10-byte header + 2 KiB of body, then EOF/abort:
+    1009 raised once cumulative bytes pass 1 KiB and total buffered never
+    exceeds cap + one header — the full 64 KiB is never allocated/read).
+  - Close-code validator vectors: peer-Close codes 1005, 1006, 1015 →
+    INVALID → echo 1002 (1005 also asserted when framed WITH a 2-byte
+    1005 payload — presence on the wire is the violation, not just
+    absence); peer-Close codes 1000, 1012, 4002 → VALID → echo same.
+  - Lock-admission race (the Close-vs-TILE gap): pass the dispatcher
+    fast-path filter, then set `closeSent` (simulating a shutdown that
+    lands after the pre-check but before writer-lock acquisition), then
+    call `transferTileIf` → assert SHUTDOWN + ZERO TILE bytes emitted;
+    ordering twin with latches (writer lock held by test, dispatcher
+    blocked acquiring, `failSession` queued behind it): on release, Close
+    bytes hit the stub before any TILE bytes, and no TILE follows the
+    Close from the same session. The older "Close during an
+    already-started TILE" vector covers completion-before-echo; THESE
+    cover never-start-after-shutdown.
+  - Coalesced-slot stress: pause the dispatcher (block before `acquire`),
+    seal+publish N=20 generations (distinct reqIds), assert
+    `readyPermit.availablePermits() <= 1` throughout (no accumulation),
+    release the dispatcher → assert ONLY the newest (reqId N) gets tile
+    dispatch (older states never emit a TILE byte) and exactly one END is
+    sent (for N).
+  - Center-first order: chunks spanning x=0..3, y=0..0 (one row) in a
+    single generation → sealed `work` order starts with the center tiles
+    (x=1,x=2 in some order — both distance 0.5 — then x=0,x=3, tie-broken
+    y,x); assert the dispatch byte stream carries TILEs in that exact
+    key order.
+  - Close-reason cap: `failSession(1002, 500-char reason)` → captured Close
+    payload ≤125 bytes total with a valid 2-byte code prefix (truncated on
+    a UTF-8 boundary — decode the reason bytes as UTF-8 without error).
   - Close-frame wire assertions (frozen `failSession`/`onPeerClose` — every
     "→1002/1003/1007/1009" above MEANS a Close control frame on the wire):
     stub `WsWriter` recording control frames; each invalid vector asserts
@@ -366,7 +459,7 @@ last_updated: 2026-09-16
     transfer vector: seal a multi-tile generation, let the dispatcher START
     (not finish) a TILE, then inject a valid peer Close → assert the
     in-flight TILE's bytes complete (frame boundary honored), NO new TILE
-    starts afterward (next `transferTile` never invoked), the echo Close is
+    starts afterward (no further `transferTileIf` call returns STARTED), the echo Close is
     emitted, and teardown follows — in that order.
 - Done when: `mvn -q test` green (offline validation track).
 
@@ -437,7 +530,14 @@ kill "$pid"; trap - EXIT
   "is this generation live" — history goes first.
 - "No queue" is literal: `rg -in "queueEmpty|QUEUE_CAP|PriorityQueue|priority
   queue" src/main/java/` must print NOTHING after this phase. The
-  dispatcher-local `nextIndex` is the drain position.
+  dispatcher-local `nextIndex` is the drain position. "Coalesced" is
+  equally literal: any `readyPermit.release()` NOT guarded by
+  `old == null` after `getAndSet` is a permit-leak bug — the stress test
+  pins `availablePermits() <= 1` under 20 rapid publishes.
+- Lock-admission is the v1.15 Close-vs-TILE fix: the dispatcher's
+  3-point filter decides SKIPPED-vs-MAYBE; only `transferTileIf`/
+  `writeEndIf` under `writeLock` decide START-vs-SHUTDOWN. Any new frame
+  emission path that bypasses these two functions reopens the race.
 - "1002 close" is literal wire bytes: `rg -n "closeSession\(\)" SessionCoordinator.java`
   must show every deterministic-violation call site going through
   `failSession` (Close frame first), and the SessionTest Close-frame

@@ -3,7 +3,7 @@ phase: phase-02-tile-engine
 goal: GOAL-002 Ceiling store plus validated import plus strict meta plus 106-tile demos
 status: 'Planned'
 parent: ./overview.md
-version: 1.14
+version: 1.15
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -104,7 +104,9 @@ last_updated: 2026-09-16
   IMPORT-START recovery (existing `.tmp-<id>/` quarantined to
   `.stale-tmp-<id>-<epoch>/`, logged, or removed — never built into blindly,
   never blocks); finest tiles from `pixel(gx,gy)`; parents
-  crop-mosaic-to-actual BEFORE downsample, pad OUTPUT to 512; Q85; tiles
+  crop-mosaic-to-actual BEFORE downsample, pad OUTPUT to 512 with the FROZEN
+  fill (solid black, content top-left — identical convention to the vips
+  post-pad pass); Q85; tiles
   written ONLY via `stagePath(tmpRoot,...)` (never a hand-built final
   path — writing through a final-root method would bypass staging).
 - Mode (b) bounded real-image `IngestTool --image <file> <id>`:
@@ -146,10 +148,21 @@ last_updated: 2026-09-16
   libvips' newer direct-JPEG fast path for version portability):
   `vips dzsave "$src" "$tmp/pyr" --depth onetile --tile-size 512 --overlap 0
   --skip-blanks -1 --suffix '.jpg[Q=85]'`
-  then transform the libvips output tree `$tmp/pyr_files/<n>/<x>_<y>.jpg`
-  → staged `$tmp/level-<n>/<x>_<y>.jpg` (dzsave nests levels under
-  `<name>_files/` — writing "directly to level-N" was never the CLI
-  behavior); remove `$tmp/pyr.dzi` and `$tmp/pyr_files` after the move.
+   then transform the libvips output tree `$tmp/pyr_files/<n>/<x>_<y>.jpg`
+   → staged `$tmp/level-<n>/<x>_<y>.jpg` (dzsave nests levels under
+   `<name>_files/` — writing "directly to level-N" was never the CLI
+   behavior); remove `$tmp/pyr.dzi` and `$tmp/pyr_files` after the move.
+ - FROZEN post-pad pass (the architecture's "post-pad" is a REAL step here,
+   not a comment — dzsave emits CLIPPED edge extents, so arbitrary
+   dimensions would otherwise fail the every-JPEG-is-512x512 validation):
+   for every staged `$tmp/level-<n>/<x>_<y>.jpg`, query
+   `vipsheader -f width/height`; any tile not exactly 512x512 is padded via
+   `vips embed "$tile" "$tile.pad" 0 0 512 512 --extend black && mv
+   "$tile.pad" "$tile"` — FROZEN fill policy: solid BLACK (0,0,0),
+   content anchored TOP-LEFT, pad on right/bottom (same convention as the
+   synthetic Java importer, so both paths produce identical edge geometry).
+   Per-file `mv` keeps replacement atomic; the pass runs BEFORE validation
+   (validation then re-asserts all-512 + size gate + PAT-001 counts).
 - `meta.json` with canonical `"name":"image-<id>"` (shell-safe by
   construction — arbitrary basenames MUST NOT be interpolated into JSON);
   validate (PAT-001, all coords, canonical pathnames, 512 dims, size gate);
@@ -217,16 +230,17 @@ last_updated: 2026-09-16
 
 - Create `NEW scripts/check_const_parity.py` (stdlib, TEST-ONLY) as a
   FRAMEWORK in this phase: mapping table covering the Java↔shell constants
-  available now — `Config.T` vs `tile-size 512` in `import_vips.sh`, Q85 in
-  `import_vips.sh`/`IngestTool` vs the frozen quality, plus every
-  `Config.java` numeric constant the script can parse (tile/cache/decode/
-  budget/seed/scales + UTP magic and type codes + `SPAN_CAP` +
-  `GEN_TILE_CAP`). The JavaScript side CANNOT be pinned here: the real
-  `viewer.js` does not exist until phase-06, so this phase's script takes a
-  frozen `--java-shell-only` flag that checks Java+shell and exits 0 without
-  touching `viewer.js`. (Rule as of this phase: EITHER a Java/shell constant
-  is pinned here OR it is removed from `Config`/the shell — full JS parity
-  is phase-06's completion task, never this phase's green gate.)
+  available now, reading TWO Java owners — `Config.java` (operational
+  tuning: tile/cache/decode/budget/seed/scales) and `UtpMessages.java`
+  (wire magic + UTP type codes; protocol constants live here, NOT in
+  `Config`) — plus shell duplicates (`tile-size 512` and `Q=85` in
+  `import_vips.sh`, Q85 in `IngestTool`). The JavaScript side CANNOT be
+  pinned here: the real `viewer.js` does not exist until phase-06, so this
+  phase's script takes a frozen `--java-shell-only` flag that checks
+  Java+shell and exits 0 without touching `viewer.js`. (Rule as of this
+  phase: EITHER a Java/shell constant is pinned here OR it is removed from
+  `Config`/`UtpMessages`/the shell — full JS parity is phase-06's
+  completion task, never this phase's green gate.)
 - Run `python3 scripts/check_const_parity.py --java-shell-only` green.
 - Done when: flag-mode green + intentional mismatch (temp edit) fails loud.
   Full `python3 scripts/check_const_parity.py` (with the JS map) is
@@ -250,6 +264,8 @@ if ./scripts/import_vips.sh dummy-src '../x' 2>/dev/null; then echo "invalid id 
 if ./scripts/import_vips.sh dummy-src '01' 2>/dev/null; then echo "leading-zero id must fail" >&2; exit 1; else rc=$?; [ "$rc" = "2" ] || { echo "leading-zero id must exit 2, got $rc" >&2; exit 1; }; fi
 grep -q "tile-size 512" scripts/import_vips.sh && grep -q "Q=85" scripts/import_vips.sh || { echo "shell tile-size/Q drifted" >&2; exit 1; }
 grep -q "vipsheader" scripts/import_vips.sh || { echo "vips pre-dimension gate missing" >&2; exit 1; }
+grep -q "vips embed" scripts/import_vips.sh || { echo "vips post-pad pass missing" >&2; exit 1; }
+if command -v vips >/dev/null 2>&1; then vips black /tmp/pad-src.png 513 777 --bands 3 && ./scripts/import_vips.sh /tmp/pad-src.png 7 && [ "$(find data/images/7 -name '*.jpg' | wc -l)" = "5" ] || { echo "513x777 vips pyramid must be 4+1=5 tiles" >&2; exit 1; }; bad=0; for j in $(find data/images/7 -name '*.jpg'); do [ "$(vipsheader -f width "$j")x$(vipsheader -f height "$j")" = "512x512" ] || { echo "unpadded edge tile: $j" >&2; bad=1; }; done; [ "$bad" = "0" ] || exit 1; ls data/images/7/.ready; else echo "SKIP vips live proof (no vips binary; bash -n + gate greps above still enforced)"; fi
 ```
 
 ## Notes for Implementer

@@ -1,6 +1,6 @@
 ---
 goal: UltraTile UTP/1.0 system — Java 21 tiling server + offline viewer + protocol doc
-version: 1.14
+version: 1.15
 date_created: 2026-09-15
 last_updated: 2026-09-16
 status: 'Planned'
@@ -17,7 +17,7 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
 - Server: JDK-only Java 21 `ServerSocketChannel`, loopback by default
   (trusted-LAN/demo scope; `--bind` opts into `0.0.0.0`).
   One reader VT + one dispatcher VT per WS session, `WsWriter` on
-  `ReentrantLock` with `writeFully`, `transferTile` declaring `24+fileSize`
+  `ReentrantLock` with `writeFully`, `transferTileIf` declaring `24+fileSize`
   with bounded zero-progress positional fallback, mid-frame failure fatal.
   `closeSession()` wakes BOTH threads (socket close + permit release;
   dispatcher checks `closed` on wake).
@@ -125,7 +125,10 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   header/Host validation → GLOBAL body-framing gate → method gate
   (`!=GET` → `405` + `Allow: GET`) → target routing, so bodyless POST gets
   405 but POST+body/TE gets 400; lowercase `get` is a valid token and
-  reaches the method gate → 405 (NOT 400); absolute-form frozen profile
+  reaches the method gate → 405 (NOT 400); INTENTIONAL SUBSET DECISION:
+  EVERY syntactically-valid non-`GET` token maps to 405 (RFC 9110 would
+  return 501 for unrecognized methods — this profile deliberately
+  collapses to 405; labeled, not RFC behavior); absolute-form frozen profile
   (plain `http`, no userinfo, no fragment, normalized host/IP-literal +
   optional numeric port, authority MUST equal Host); exactly-one valid Host;
   `Map<String,List<String>>` headers; `writeFully`/`readFully`; leftover
@@ -194,11 +197,14 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     entries removed. Every TILE receipt also adds its key to
     `receivedThisEpoch` (idempotent set add alongside the per-batch
     `receivedKeys.add`).
-  - REQ_IDs come ONLY from the `createReqAllocator()` closure (return
-    current, then increment; start at 1 per WS; if allocation would pass
-    `0xFFFFFFFE`, reconnect and restart at 1 — no-wrap is a call-site
-    invariant, not prose; the counter is closure-private, never a mutable
-    module global).
+  - REQ_IDs come ONLY from the `createReqAllocator()` closure, which
+    returns an explicit result — `{ok:true, reqId}` normally, or
+    `{ok:false, reason:"exhausted"}` when the counter would pass
+    `0xFFFFFFFE` (start at 1 per WS; NEVER wraps, NEVER throws). On
+    `exhausted` the caller reconnects (new WS, fresh allocator) and retries
+    the allocation exactly once — exhaustion is an API result handled at
+    the call site, not prose. The counter is closure-private, never a
+    mutable module global.
   - Coordinate ownership (frozen): needed → pending-network →
     received/decode-owned → cached; TILE receipt REMOVES pending
     immediately; overflow → `retryNeeded`; JPEG rejection of a VALID
@@ -229,30 +235,29 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     `ws.protocol === "ultratile.utp.v1"`; `ws.binaryType = "arraybuffer"`;
     await `open` before any UTP send. `selectImage(id)` is the SOLE owner of
     the image-switch transaction, executed EXACTLY ONCE per switch —
-    `sendAbort(old)` where applicable → `newViewEpoch()` (capture the new
-    epoch as `myEpoch`) → abort any in-flight `/info` fetch via a shared
-    `AbortController` and start the new fetch under it → after EVERY
-    `await` (fetch response AND `.json()`), re-check `myEpoch ===
-    currentViewEpoch` and ABANDON silently on mismatch (touch nothing — no
-    camera, no cache, no `allocReqId`) → clear image-specific
-    cache/bitmaps + discard pre-decode buffers → reset camera to the frozen
-    initial view + reset `avgTileBytes` → `allocReqId()` + pin Z0
-    (chunks+COMMIT via the wire codec; the tail after the last guard check
-    is fully synchronous so no second race fits between check and pin).
-    This closes the rapid-switch race where A's slow `/info` resolves after
-    B's and switches the server back to A. The picker `onchange` handler
-    calls ONLY `selectImage(newId)` (no separate epoch bump/clear/reset/pin
-    — the v1.11 flow double-bumped the epoch and could pin two Z0
-    generations with the clear landing between them).
+    `sendAbort(old)` where applicable → bump BOTH counters for their
+    separate jobs (`myEpoch = newViewEpoch()` invalidates viewport work;
+    `mySwitch = ++imageSwitchSeq` guards `/info` liveness) → abort any
+    in-flight `/info` fetch via a shared `AbortController` and start the
+    new fetch under it → after EVERY `await` re-check `mySwitch ===
+    imageSwitchSeq` and ABANDON silently on mismatch (a resize/pan during
+    the fetch bumps `viewEpoch` but NOT `imageSwitchSeq`, so B's valid
+    `/info` survives layout churn; the pin re-reads LIVE canvas dims).
+    While `pendingSwitch != null`, `newViewIntent()` does local-only work
+    + sets coalesced `deferredIntent` (no old-image network batches) and
+    the switch runs one fresh intent after pinning. The picker `onchange`
+    handler calls ONLY `selectImage(newId)`.
     Pan/zoom/resize use a SEPARATE `newViewIntent()` path (epoch bump +
     headroom-gated budgeted batches; no cache clear, no camera reset, no
     `avgTileBytes` reset). REQ_ID continuity is preserved across switches
     (imageId is on the wire precisely so one session switches images); only
     a genuine WS reconnect resets the allocator to 1.
   - `viewer.js` duplicates Java constants EXPLICITLY with
-    `scripts/check_const_parity.py` pinning EVERY shared Java↔JS constant to
-    `Config.java` (tile/cache/decode/budget/seed/scales + UTP magic and
-    type codes), plus shell duplicates (tile size, JPEG Q) where practical.
+    `scripts/check_const_parity.py` pinning EVERY shared Java↔JS constant
+    to its Java owner — operational tuning to `Config.java`
+    (tile/cache/decode/budget/seed/scales) and wire magic/type codes to
+    `UtpMessages.java` (the script reads BOTH Java files) — plus shell
+    duplicates (tile size, JPEG Q) where practical.
   - `rxBytes` = UTP TILE `payloadLen` bytes received (JPEG payload only —
     NOT the 24B UTP header, NOT WS framing); `decodedBytes` = payload bytes
     that decoded (NOT bitmap footprint). Picker uses `textContent`, never
@@ -359,15 +364,24 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     never self-claimed) AND `meta.name == "image-"+id` (canonical-name
     enforcement) AND the directory name itself must equal
     `Integer.toString(parsedId)` (so `01` can never validate as 1).
-- **REQ-009**: Dispatch on sealed READY SLOT (coalescing, never a FIFO) +
-  teardown/wakeup + frame-boundary cancel (channel teardown-only) +
-  stale-vs-invalid (1002) + no-evict `rejectedReqIds`; `transferTile` WS
+- **REQ-009**: Dispatch on sealed READY SLOT (coalescing, never a FIFO;
+  permit accounting `getAndSet`-paired so permits never accumulate — §phase-05)
+  + teardown/wakeup + frame-boundary cancel (channel teardown-only) +
+  stale-vs-invalid (1002) + no-evict `rejectedReqIds`; final frame admission
+  INSIDE the writer lock (`transferTileIf`/`writeEndIf` re-check
+  `!closeSent && !closed && !canceled && active==state` before the first
+  byte — no data frame starts after a Close); `transferTileIf` WS
   `24+fileSize` + looped `transferTo` with BOUNDED positional zero-progress
   fallback (`src.read(dst64k, transferredOffset)` advancing an explicit
   offset — `transferTo` never moves the channel position; EOF before the
-  advertised length stays fatal); size gate pre-frame; SKIPPED pre-frame
-  only; post-start fatal; `0x04` requires sealed && !canceled &&
-  `active.get()==state` && `nextIndex==work.size()` && `inFlight==0`.
+  advertised length stays fatal); FROZEN center-first work order: center =
+  union bounding box of ALL chunks' tile ranges
+  (`ccx=(loX+hiX)/2.0`, `ccy=(loY+hiY)/2.0` in tile-index space — the wire
+  carries ranges, never a viewport center, so the center is DERIVED here);
+  sort keys by (Manhattan `|x-ccx|+|y-ccy|` ascending, then `y`, then `x`);
+  size gate pre-frame; SKIPPED pre-frame only; post-start fatal; `0x04`
+  requires sealed && !canceled && `active.get()==state` &&
+  `nextIndex==work.size()` && `inFlight==0`.
   u32 discipline everywhere as v1.8.
 - **SEC-001**: Validate id/Z/coords/`TILE_SIZE==512`/LOD==0/span/
   `GEN_TILE_CAP` (dedupe-aware)/u32-shape (see REQ-009); client subtracts
@@ -391,15 +405,17 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   + `build.sh` (AUTHORITATIVE clean-machine build: bash, `set -euo
   pipefail`, cleans classes, empty-safe copy, JDK + standard userland; committed
   executable).
-- **CON-002**: `Config` single source: `BIND=127.0.0.1`, `PORT=8080`,
-  `T=512`, `M=40`, `D=6`, `DQ_JOBS=24`, `DQ_BYTES=4MiB`, `MAGIC=0xAA`,
-  Q85, `MAX_DIM=262144`, `IMPORT_IMAGE_MAX_DIM=8192`,
+- **CON-002**: `Config` single source for OPERATIONAL TUNING:
+  `BIND=127.0.0.1`, `PORT=8080`, `T=512`, `M=40`, `D=6`, `DQ_JOBS=24`,
+  `DQ_BYTES=4MiB`, Q85, `MAX_DIM=262144`, `IMPORT_IMAGE_MAX_DIM=8192`,
   `IMPORT_IMAGE_MAX_PIXELS=16777216`, `GEN_TILE_CAP=256`, `BATCH_CAP=30`,
   `SPAN_CAP=128`, `WS_MSG_CAP=1024`, `MAX_TILE_BYTES=2MiB`,
   `META_MAX_BYTES=16384`, `META_NAME_MAX=128`, `REJECTED_CAP=64`,
-  `AVG_TILE_SEED=131072`, `SCALE_MIN=1e-3`, `SCALE_MAX=32`; demos id0 2048
-  (21) + id1 4096 (85), each ensured independently; live rescan per call, no
-  restart. Node is NOT a runtime dep (test-only).
+  `AVG_TILE_SEED=131072`, `SCALE_MIN=1e-3`, `SCALE_MAX=32`. Wire magic and
+  UTP type codes are single-sourced in `UtpMessages.java` (protocol
+  constants class — NOT `Config`); the parity script reads both files.
+  Demos id0 2048 (21) + id1 4096 (85), each ensured independently; live
+  rescan per call, no restart. Node is NOT a runtime dep (test-only).
 - **CON-003**: Assets under `src/main/resources/web/`, correct MIME, no CDN.
 - **GUD-001**: `Cache-Control` split; FINE logs (redirectable); HUD/E2E
   bytes (active-Z/reqs/evicts/decodes, `rxBytes` vs `decodedBytes` split)
@@ -410,8 +426,11 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
 - **PAT-002**: `screenX=Vw/2+s*(worldX-camX)` (+Y); cam = viewport-center
   world point.
 - **PAT-003**: Half-open + empty-range: intersect native
-  `[cam-Vw/2s,cam+Vw/2s)` with `[0,W)`, empty→no request; scale `2^(Z-N)`;
-  `minTile=floor(min/512)`, `maxTile=min(C-1,ceil(max/512)-1)`.
+  `[cam-Vw/2s,cam+Vw/2s)` with `[0,W)`, empty→no request; then multiply
+  native coords by `2^(Z-N)` FIRST and only then quantize to tiles
+  (`minTile=floor(scaledMin/512)`,
+  `maxTile=min(C-1,ceil(scaledMax/512)-1)`) — dividing NATIVE coords by
+  512 before scaling is wrong for every Z<N.
 - **PAT-004**: Screen-space clear FIRST, then world transform, clip
   `[0,W)×[0,H)`, full padded 512 bitmaps at `512*2^(N-z)` footprints (never
   crop-stretch); fine overlays coarse.
@@ -484,9 +503,10 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   history-before-validation, coalesced ready slot, `closeSession` wakeup,
   unified dispatcher END path).
 - **FILE-008**: `NEW src/main/resources/web/viewer.js` — `connectWs()` +
-  `selectImage()` (sole image-switch owner) + `newViewIntent()` +
-  allocator closure + wire codec (incl. exact TILE frame-length check) +
-  viewEpoch + `BatchState` (per-generation, no skipped set) + epoch-level
+  frozen `boot()` (canvas → live gallery → open → initial select →
+  handlers) + `selectImage()` (sole image-switch owner, `imageSwitchSeq` +
+  deferred intents) + `newViewIntent()` + allocator result-API + wire
+  codec (incl. exact TILE frame-length check) + viewEpoch + `BatchState` (per-generation, no skipped set) + epoch-level
   `receivedThisEpoch`/`serverSkippedThisEpoch` + stale-END discard +
   ownership machine + epoch cleanup + netCov/covCov split +
   headroom-budgeted batches + compositing (exposes
@@ -503,16 +523,18 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   map — full green required phase-06, never phase-02).
 - **FILE-013**: `NEW scripts/ws_handshake_check.py` — stdlib raw-socket
   upgrade probe reading exactly through `\r\n\r\n` (test-only).
-- Verified ground truth: v1.13 plans (8 files, all `version: 1.13`, zero
+- Verified ground truth: v1.14 plans (8 files, all `version: 1.14`, zero
   placeholders, zero lines >1000 chars); impl files `NEW`.
 
 ## 6. Testing
 
 - **TEST-001 (two tracks)**:
   - AUTHORITATIVE track (empty cache; assumes a JDK + standard Unix
-    userland ONLY — bash, coreutils, `find`, `unzip`, `grep`, `seq`,
-    `sleep`, and the bash `/dev/tcp` probe; NO downloaded dependencies:
-    no Maven, Node, Python, curl, or ripgrep): `./build.sh` + `java -cp`
+    userland ONLY — bash, coreutils (incl. `mktemp`), `find`, `grep`,
+    `mkdir`, `jar`, and the bash `/dev/tcp` probe; NO downloaded
+    dependencies: no Maven, Node, Python, curl, ripgrep, `unzip`, or
+    `seq` — manifest checks use `jar`, loops use bash arithmetic):
+    `./build.sh` + `java -cp`
     demo generation + `java -jar` start/stop + manual browser smoke (open
     the page, pan/zoom, observe tiles + HUD). All scripted assertions live
     in the other track.
@@ -523,28 +545,39 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
     duplicate-stale/history-before-validation/stale-vs-invalid/
     COMMIT-liveness/rejectedReqIds-no-evict/bad-9-resurrection/
     minimal-length/dedupe-aware-cap/mismatch/seen-rule/poisoning/
-    supersede-cancel/no-END/coalescing/teardown-wakeup/
-    close-frame-codes(1002/1003/1007/1009)/peer-close-echo incl. empty-echo/
-    closeSent-vs-closed/frame-boundary-cancel/
-    positional-fallback, ID canonicalization, demo repair,
-    vipsheader-pre-dim-gate, writer serialization + `writeFully`,
+    supersede-cancel/no-END/coalescing(getAndSet-paired permits + newest-only
+    stress)/teardown-wakeup/
+    close-frame-codes(1002/1003/1007/1009 + reason-cap)/peer-close-echo incl.
+    4002-no-semantics/empty-echo/no-new-TILE-during-transfer/
+    closeSent-vs-closed/lock-admission-race/frame-boundary-cancel/
+    positional-fallback, center-first-ordering, ID canonicalization, demo repair,
+    vipsheader-pre-dim-gate + vips-post-pad-black + 513x777-vips-proof,
+    writer serialization + `writeFully`, explicit Close-code validator
+    (invalid 1005/1006/1015, valid 1000/1012/4002), incremental-1KiB-cap
+    (well-formed-65536→1009 unbounded-allocation-free),
     transferTo `2,0,2` + `2,0,0,0,0`-then-positional-fallback + partial +
     persistent-zero-fallback + fatal-after-start, WS matrix incl.
     singletons/subprotocol-restriction/version-advertise/version-override,
-    half-open/empty,     no-wrap via the allocator closure, viewer bootstrap/
+    half-open/empty, allocator result-API (exhausted→reconnect-once, never
+    wrap/throw), viewer boot-order/no-packets-before-open/live-gallery +
+    imageSwitchSeq-races (resize/pan-during-fetch, latest-dims-pin-once) +
+    bootstrap/
     single-owner-selectImage/epoch-guard-A→B/no-double-bump/4002-browser-close/
     ownership/epoch-cleanup/
     pending/retry/terminal/epoch-sets/END-skipped/stale-END-discard/
-    receivedKeys/dup/TILE-length-equality/END-exact-accounting/
+    receivedKeys/dup/stale-TILE-discard-socket-OPEN/TILE-length-equality/
+    complete-message-golden/END-exact-accounting/
     END-identity-fatal/netCov-union-stability/netCov-covCov/BatchState-lifetime/
-    headroom/budget/expectedKeys/FORMAT-ordering/wire-codec-vectors/
-    parity-full, meta id-equality/canonical-name/canonical-dirname/bounds,
+    headroom/budget(conservative-floor)/expectedKeys/FORMAT-ordering/wire-codec-vectors/
+    parity-full (Config-tuning + UtpMessages-wire + shell), meta id-equality/
+    canonical-name/canonical-dirname/canonical-info-IDs/bounds,
     ImageIO pre-decode caps incl. the 4097×4097 pixel-cap-only vector).
 - **TEST-002**: HTTP probes (OFFLINE VALIDATION track only): `curl`
   static/info (+405 bodyless-POST with `Allow: GET`; 400 for
   POST+`Content-Length: 1` and POST+`Transfer-Encoding: chunked` — framing
   gate precedes method gate; lowercase `get` →405 as a valid-token unknown
-  method); live registry; readiness loops FAIL LOUD; absolute-form
+  method — intentional 405-for-every-valid-token subset, RFC 9110 would use
+  501 for unrecognized); live registry; readiness loops FAIL LOUD; absolute-form
   match→200 AND authority≠Host→400 AND non-http-scheme/userinfo/fragment→400
   AND duplicate-Host→400 AND TE/CL-probes→400 AND lexical probes
   (pre-colon-space/obs-fold/bare-LF/NUL-value/bad-version/double-space→400),
@@ -591,8 +624,9 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   of scope, stated plainly).
 - **ASSUMPTION-001**: `build.sh` + `java` is THE grader-assumable path
   (JDK + standard Unix userland — authoritative blocks freely use bash,
-  coreutils, `find`, `unzip`, `grep`, `seq`, `sleep`, and `/dev/tcp`;
-  they MUST NOT use Maven, Node, Python, curl, or ripgrep).
+  coreutils (incl. `mktemp`), `find`, `grep`, `mkdir`, `jar`, and
+  `/dev/tcp`; they MUST NOT use Maven, Node, Python, curl, ripgrep,
+  `unzip`, or `seq`).
   Maven, Node, Python, curl, and ripgrep are offline-validation-path
   tooling that MUST NOT appear in any authoritative block; needs
   confirmation of port 8080.
@@ -607,7 +641,10 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   BEFORE implementation; if `AsynchronousServerSocketChannel`/selector async
   is explicitly required, phases 01/04/05 change transport now, not late
   (tile store, UTP packets, session rules, viewer, metadata survive —
-  §REQ-002).
+  §REQ-002). IMPLEMENTATION GATE (BLOCKER): Phase 01 MUST NOT start until
+  this is confirmed. JEP 444 itself distinguishes asynchronous-programming
+  style from VT thread-per-request programming — this is a real transport
+  decision, not wording.
 
 ## 8. Related Specifications / Further Reading
 

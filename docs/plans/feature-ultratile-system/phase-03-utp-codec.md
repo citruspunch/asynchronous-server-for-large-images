@@ -3,7 +3,7 @@ phase: phase-03-utp-codec
 goal: GOAL-003 Sealed-generation codec 28B/8B/8B/24B/16B round-trips
 status: 'Planned'
 parent: ./overview.md
-version: 1.14
+version: 1.15
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -53,7 +53,10 @@ last_updated: 2026-09-16
   `TileHeader(imageId,zoom,format,tileSize,reqId,tileX,tileY,payloadLen)`
   (NO bytes; `payloadLen` 1..`MAX_TILE_BYTES`),
   `GenerationEnd(imageId,reqId,sent,skipped)`; consts + `T_COMMIT=0x05` +
-  `SUBPROTOCOL="ultratile.utp.v1"`.
+  `SUBPROTOCOL="ultratile.utp.v1"`. `UtpMessages` is the SINGLE owner of
+  wire magic + UTP type codes (protocol constants class — NOT `Config`,
+  which owns operational tuning only; `check_const_parity.py` reads both
+  files).
 - Validate id/zoom/tileSize==512/LOD==0 (1/2 reserved → throw)/
   format∈{1,2} wire-parseable BUT document `2` reserved (server never emits;
   viewer treats as unsupported)/coords/span≤128/LEN gate.

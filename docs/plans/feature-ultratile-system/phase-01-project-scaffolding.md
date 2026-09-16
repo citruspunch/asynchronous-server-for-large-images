@@ -3,7 +3,7 @@ phase: phase-01-project-scaffolding
 goal: GOAL-001 Exact-pin Maven plus robust build.sh plus compilable stub
 status: 'Planned'
 parent: ./overview.md
-version: 1.14
+version: 1.15
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -76,6 +76,15 @@ last_updated: 2026-09-16
   `((InetSocketAddress) serverChannel.getLocalAddress())` for the bind test;
   `accept()` loop + `Thread.ofVirtual().start(()->handle(ch))`; stub
   `handle` closes (strict lexical logic phase 04, WS branch phase 05).
+- FROZEN shutdown lifecycle: `NioHttpServer implements AutoCloseable`;
+  `close()` closes the `ServerSocketChannel` (the blocked `accept()` then
+  terminates with `AsynchronousCloseException`/`ClosedChannelException`,
+  which is NORMAL shutdown, never logged as an error), shuts down the
+  accept executor/thread if any, and returns only after the accept thread
+  is joinable/terminated (bounded join — no orphan threads). Every test
+  that starts a server uses try-with-resources (or explicit `close()` in a
+  `finally`) so later server-leak assertions test the APP, not the
+  harness.
 - Comment: transport lives here + `ws/` only — a mandated async transport
   (ASSUMPTION-004) swaps these files, not the protocol.
 - Done when: `mvn -q compile` passes (offline validation track).
@@ -99,16 +108,17 @@ last_updated: 2026-09-16
 
 ## Validation Commands
 
-Authoritative track — JDK + standard Unix userland ONLY (bash, coreutils,
-`find`, `unzip`, `grep`, `seq`, `sleep`, and the bash `/dev/tcp` probe —
-no downloaded dependencies; no Maven, Node, Python, curl, rg):
+Authoritative track — JDK + standard Unix userland ONLY (bash, coreutils
+(incl. `mktemp`), `find`, `grep`, `mkdir`, `jar`, and the bash `/dev/tcp`
+probe — no downloaded dependencies; no Maven, Node, Python, curl, ripgrep,
+`unzip`, or `seq`):
 
 ```sh
 [ -x build.sh ] || { echo "build.sh not executable" >&2; exit 1; }
 ./build.sh
-unzip -p target/ultratile-1.0.jar META-INF/MANIFEST.MF | grep Main-Class
+tmpd="$(mktemp -d)"; topd="$PWD"; ( cd "$tmpd" && jar xf "$topd/target/ultratile-1.0.jar" META-INF/MANIFEST.MF ) && grep -q "Main-Class" "$tmpd/META-INF/MANIFEST.MF" || { echo "manifest lacks Main-Class" >&2; exit 1; }; rm -rf "$tmpd"
 java -jar target/ultratile-1.0.jar & pid=$!
-alive=0; for i in $(seq 1 15); do (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null && { alive=1; echo tcp-alive; exec 3<&-; exec 3>&-; break; } || sleep 1; done; [ "$alive" = "1" ] || { echo "TCP never came up" >&2; kill "$pid"; exit 1; }
+alive=0; for ((i=0;i<15;i++)); do (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null && { alive=1; echo tcp-alive; exec 3<&-; exec 3>&-; break; } || sleep 1; done; [ "$alive" = "1" ] || { echo "TCP never came up" >&2; kill "$pid"; exit 1; }
 kill "$pid"; wait "$pid" 2>/dev/null || true
 ```
 
@@ -121,8 +131,10 @@ mvn -q test -Dtest=MainTest
 `MainTest` (new, JUnit): `parseBind({})` → `"127.0.0.1"`;
 `parseBind({"--bind","0.0.0.0"})` → `"0.0.0.0"`; unparseable → exit path
 (throws/fails, never silently defaults); start a `NioHttpServer` on an
-ephemeral port with bind `"127.0.0.1"` and assert `getBindAddress()`
-reports the loopback address, not the wildcard. (v1.10's
+ephemeral port with bind `"127.0.0.1"` INSIDE try-with-resources and assert
+`getBindAddress()` reports the loopback address, not the wildcard, then
+assert the accept thread terminated after the block (no joinable-thread
+leak — the `close()` contract above). (v1.10's
 `curl localhost` probe passed identically for a loopback-only and a
 wildcard server — connecting to `localhost` cannot distinguish them, so the
 value is now asserted directly. Note the `wait` after `kill`: the second
@@ -132,9 +144,10 @@ server must never start while the first JVM still holds the port.)
 
 - TWO TRACKS with frozen names and frozen memberships: the AUTHORITATIVE
   track (JDK + standard Unix userland — `build.sh` itself uses `find`,
-  `cp`, `rm`, `mkdir`, and the validation block uses `unzip`, `grep`,
-  `seq`, `sleep` plus the bash-builtin `/dev/tcp` probe; none of these
-  needs downloading, so all are allowed here; Maven/Node/Python/curl/rg
+  `cp`, `rm`, `mkdir`, `jar`; the validation block uses `mktemp`, `grep`,
+  bash-arithmetic loops plus the bash-builtin `/dev/tcp` probe; manifest
+  checks go through `jar xf` into a `mktemp` dir — `unzip` and `seq`
+  are NOT assumed anywhere on this track; Maven/Node/Python/curl/rg
   are offline-validation-path tooling, never assumed here) and the
   OFFLINE VALIDATION track (primed Maven cache
   + Node/Python/curl/rg). No validation block may mix them without saying

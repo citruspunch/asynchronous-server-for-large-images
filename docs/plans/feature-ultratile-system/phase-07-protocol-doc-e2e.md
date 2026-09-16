@@ -3,7 +3,7 @@ phase: phase-07-protocol-doc-e2e
 goal: GOAL-007 Normative protocol doc plus contract/unit-split E2E
 status: 'Planned'
 parent: ./overview.md
-version: 1.14
+version: 1.15
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -123,7 +123,7 @@ last_updated: 2026-09-16
 - §5 session SERVER STATE DIAGRAM + SUPERSESSION SEQUENCE (GenerationState +
   work/nextIndex + Atomic/volatile/ReentrantLock/writeFully table, coalesced
   ready slot + supersede-replaces-stale + sealed-empty uniformity, 3-point
-  checks, `transferTile` + positional zero-fallback + loop + fatal-mid-frame,
+  checks, `transferTileIf` (lock-admission) + positional zero-fallback + loop + fatal-mid-frame,
   pre-frame gates incl. size, `0x04` rule + no-END-on-cancel, `closeSession`
   teardown/wakeup (socket + permit in the `closed`-CAS winner ONLY —
   `failSession` never pre-sets `closed`; dispatcher `closed`-check),
@@ -146,11 +146,21 @@ last_updated: 2026-09-16
   required, transport revisits — everything above is transport-agnostic) +
   trusted-LAN/demo scope (loopback default, `--bind` opt-in, no-deadline
   limitation stated).
-- §9 MEMORY ENVELOPE (worst case: 40×512×512×4 B = 41,943,040 B = 40 MiB raw
+- §9 MEMORY ENVELOPE — two ledgers, never conflated. APPLICATION-MANAGED
+  RETAINED memory (worst case: 40×512×512×4 B = 41,943,040 B = 40 MiB raw
   RGBA-equivalent bitmap pixels, plus browser/GPU overhead; + up to 12 MiB
   in-flight compressed (6×2 MiB) + 4 MiB queued compressed + per-tile
   overhead noted; `decodedBytes` measures payload bytes decoded, bitmap
-  footprint is the envelope above).
+  footprint is the envelope above). BROWSER/SOCKET TRANSIENT buffering
+  (NOT application-managed): the JS decode queue only rejects excess work
+  AFTER each WebSocket message is received, so a pathological LEGAL batch
+  (30 planned tiles × 2 MiB max TILE) can transiently push up to 60 MiB
+  compressed through the WS receive path (typical traffic is ~45–95 KiB /
+  tile — the 60 MiB figure is the adversarial bound, stated honestly, not
+  the operating point). Planning leans conservative to shrink that window
+  (`planTileBytes = max(avgTileBytes, PLAN_FLOOR=65536)`) but the protocol
+  does NOT bound UA socket buffering — §9 says so plainly instead of
+  claiming "12 + 4 MiB compressed" as a system total.
 - §10 refs (6455 incl. minimal-length rule, 9110/9112 incl. generic method,
   dzsave incl. `_files/` tree, transferTo position-invariance, ImageReader
   pre-decode dimensions, SocketChannel R/W, VT pinning, JEP 444, 101 thread).
@@ -195,7 +205,10 @@ last_updated: 2026-09-16
   exact payload recovery; MINIMAL-LENGTH vectors: 126-form encoding length
   124 → rejection; 127-form encoding length 1000 (<65536) → rejection;
   minimal-boundary 126-form length 126 + 127-form length 65536 → accepted
-  (the v1.9 suite never pinned the RFC 6455 minimal-bytes rule); MASKED
+  HERE ONLY (this is the server→client parser, where large TILEs are
+  legal — the client→server `WsFrameTest` MUST map well-formed-65536 to
+  1009 per the phase-05 precedence rule; the v1.9 suite never pinned the
+  RFC 6455 minimal-bytes rule); MASKED
   server-style frame → assert REJECTION; 64-bit high-bit-set length →
   rejection; truncated stream → clean need-more/exception (documented, no
   hang). `parse_any_frame`: masked client-style frame → unmasked recovery.
@@ -212,12 +225,16 @@ last_updated: 2026-09-16
   during-transfer + closeSent/closed-split under throwing writer +
   positional-`2,0,0,0,0` + dedupe-at-cap + minimal-length +
   unified-empty-COMMIT (phase-05 TASK-004);
-  `test_viewer.cjs` green (bootstrap/epoch-guarded-`selectImage`/A→B-race/
-  no-double-bump/`newViewIntent`/allocator-closure/4002-browser-close/
+  `test_viewer.cjs` green (boot-order/no-packets-before-open/live-gallery/
+  epoch-guarded-`selectImage`/imageSwitchSeq-races (resize/pan-during-fetch,
+  latest-dims-pin-once)/A→B-race/
+  no-double-bump/`newViewIntent`+deferred-intent/allocator-result-API
+  (exhausted→reconnect-once)/4002-browser-close/
   wire-codec-vectors/complete-message-golden/TILE-length-equality/
   stale-TILE-discard-socket-OPEN/FORMAT-ordering/stale-END-discard/
   END-triple/END-identity-fatal/epoch-sets-suppression/retry→skip-union/
-  netCov-stability/netCov-covCov/payloadLen-semantics/avg-reset +
+  netCov-stability/netCov-covCov/payloadLen-semantics/avg-reset/PLAN_FLOOR/
+  conservative-budget +
   epoch-cleanup/requestable-again/rapid-double-bump, duplicate-TILE,
   BatchState-lifetime, `format=2`-as-unsupported, initial-camera,
   ownership/pending/retry/terminal/END-skipped/headroom/budget/
@@ -235,10 +252,11 @@ last_updated: 2026-09-16
   2048 smoke-only.
 - Write `NEW docs/protocol/E2E-REPORT.md` (<80 lines: verdict table, memory
   envelope §9 summary (40 MiB RGBA pixels + overhead + 12 MiB in-flight +
-  4 MiB queued), manual-browser path on the authoritative track, zoom
-  scenario, per-child 10x note, forbidden patterns: vacuous END-wait,
-  internal-counter asserts, bare-`wait`, `pid`-shadowing, `head -N`-
-  on-upgrade, `localhost`-connect-as-bind-proof).
+  4 MiB queued RETAINED vs up-to-60 MiB pathological TRANSIENT — the two
+  ledgers, never a single total), manual-browser path on the authoritative
+  track, zoom scenario, per-child 10x note, forbidden patterns: vacuous
+  END-wait, internal-counter asserts, bare-`wait`, `pid`-shadowing,
+  `head -N`-on-upgrade, `localhost`-connect-as-bind-proof).
 - Done when: 10x green + all unit greens + report.
 
 ### TASK-005 — Two-track rehearsal
@@ -305,14 +323,19 @@ kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; 
   = offline synthetic parser test (never compressibility luck); Java +
   `test_viewer.cjs` + parity = internal state (seen-poisoning, three-way
   COMMIT via the unified dispatcher path, empty-sentinel, COMMIT-liveness,
-  history-before-validation, coalescing, teardown/wakeup,
-  failSession-Close-codes(1002/1003/1007/1009), three-way peer-Close echo
-  (incl. 4002/no-semantics/empty/no-new-TILE), closeSent/closed-split, stale-vs-invalid,
-  no-evict rejected set, bootstrap/epoch-guarded-`selectImage`/A→B-race/
-  no-double-bump/4002-browser-close/`newViewIntent`/allocator/ownership/
-  epoch-cleanup/epoch-sets/union-netCov/headroom/BatchState/expectedKeys/
-  receivedKeys/TILE-length-equality/complete-message-golden/
-  stale-END-discard/netCov-stability/netCov-covCov/
+  history-before-validation, coalescing (getAndSet permits + newest-only),
+  lock-admission (no-TILE-after-Close), teardown/wakeup,
+  failSession-Close-codes(1002/1003/1007/1009 + reason-cap),
+  explicit Close validator, three-way peer-Close echo
+  (incl. 4002/no-semantics/empty/no-new-TILE), closeSent/closed-split,
+  incremental-1KiB-cap, stale-vs-invalid,
+  no-evict rejected set, boot/no-packets-before-open/imageSwitchSeq/
+  deferred-intent/epoch-guarded-`selectImage`/A→B-race/
+  no-double-bump/4002-browser-close/allocator-result/`newViewIntent`/
+  ownership/epoch-cleanup/epoch-sets/union-netCov/PLAN_FLOOR/
+  headroom/BatchState/expectedKeys/receivedKeys/
+  TILE-length-equality/complete-message-golden/
+  stale-TILE-discard-OPEN/stale-END-discard/netCov-stability/netCov-covCov/
   wire-codec, pan+zoom eviction). Forbidden
   patterns stay named in the report.
 - Self-containedness graded: build (`./build.sh`), start (`server_pid=$!`

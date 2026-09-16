@@ -3,7 +3,7 @@ phase: phase-06-viewer-frontend
 goal: GOAL-006 Epoch-cleanup viewer plus epoch transport sets plus wire-codec vectors
 status: 'Planned'
 parent: ./overview.md
-version: 1.14
+version: 1.15
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
@@ -120,7 +120,11 @@ last_updated: 2026-09-16
     - NO network batch without real headroom:
       `headroomOk = inflight<MAX_DECODE && queueJobs<DQ_JOBS &&
       freeBytes>=MAX_TILE_BYTES`; batch budget
-      `min(BATCH_CAP, freeJobSlots, max(1,floor(freeBytes/avgTileBytes)))`,
+      `min(BATCH_CAP, freeJobSlots, max(1,floor(freeBytes/planTileBytes)))`,
+      where `planTileBytes = max(avgTileBytes, PLAN_FLOOR=65536)` (the
+      running mean ALONE would let a streak of tiny tiles plan a 30×2MiB
+      batch — the floor keeps one planning step conservative; §phase-07
+      documents the residual transient bound honestly);
       `avgTileBytes` = running mean over received TILE `payloadLen` (SAME
       quantity as `rxBytes`), seed 131072, RESET to seed on every image
       switch; END ≠ decoder-ready.
@@ -170,9 +174,10 @@ last_updated: 2026-09-16
 
 - Consts incl. `TILE=512,MAX_CACHE=40,MAX_TILE_BYTES=2097152,BATCH_CAP=30,
   MAX_DECODE=6,DECODE_QUEUE_MAX_JOBS=24,DECODE_QUEUE_MAX_BYTES=4MiB,
-  AVG_TILE_SEED=131072,SCALE_MIN/MAX,TAU` (all covered by the TASK-004
-  parity map — any change touches `Config.java` + `viewer.js` + the map
-  together).
+  AVG_TILE_SEED=131072,PLAN_FLOOR=65536,SCALE_MIN/MAX,TAU` (all covered by
+  the TASK-004 parity map — any change touches the owning Java file +
+  `viewer.js` + the map together; `PLAN_FLOOR` is viewer-LOCAL planning
+  policy with no Java counterpart and lives OUTSIDE the map like 4002).
 - Frozen viewer-local `CLOSE_UTP_ERROR=4002` ("UTP protocol error"): the
   code for EVERY browser-detected UTP violation, sent as
   `ws.close(4002, shortReason)` with a short ASCII reason (≤123 bytes).
@@ -184,11 +189,22 @@ last_updated: 2026-09-16
   4002 is therefore deliberately OUTSIDE the parity map — no SHARED
   constant exists or may be added for it.
 - FROZEN `createReqAllocator()`: returns `{allocReqId}` closing over a
-  private counter starting at 1; each call returns the current value then
-  increments; if the return value would exceed `0xFFFFFFFE`, reconnect first
-  and restart at 1 on the new WS. One allocator instance per WS connection;
+  private counter starting at 1; each call returns an explicit RESULT —
+  `{ok:true, reqId}` (current value, then increment) or
+  `{ok:false, reason:"exhausted"}` when the counter would pass
+  `0xFFFFFFFE` (NEVER wraps, NEVER throws). On `exhausted` the caller
+  reconnects (new WS, fresh allocator starting at 1) and retries the
+  allocation exactly once. One allocator instance per WS connection;
   `selectImage` NEVER resets it. No module-level mutable counter exists.
-- `viewEpoch` u32 (0 reserved; per intent);
+- `viewEpoch` u32 (0 reserved; per VIEWPORT intent — viewport-work
+  invalidation ONLY, never image-switch liveness);
+  `imageSwitchSeq` u32 (0 reserved; per `selectImage` CALL — the SOLE
+  `/info` liveness token) + `pendingSwitch:{seq,id}|null`
+  (set at switch start, cleared when that switch pins or is superseded...
+  precisely: each switch sets `pendingSwitch={seq:mySwitch,id}`; a switch
+  clears it only if `pendingSwitch.seq===mySwitch` at resolve time);
+  `deferredIntent:boolean` (coalesced viewport intent held while a switch
+  is unresolved);
   per-epoch `epochToken{epoch,canceled,awaiters[]}`;
   `BatchState{reqId,epoch,imageId,zoom,expectedKeys:Set,receivedKeys:Set,
   networkComplete,canceled}` in `batches:Map` with FROZEN lifetime (reclaim
@@ -234,10 +250,13 @@ last_updated: 2026-09-16
   validation on parse INCL. the TILE `24 + payloadLen` frame-length
   equality inside `parseTileHeader`).
 - Expose `globalThis.UltraTile={createReqAllocator,connectWs,selectImage,
-  newViewIntent,encodeViewport,encodeCommit,encodeAbort,parseTileHeader,
+  boot,newViewIntent,encodeViewport,encodeCommit,encodeAbort,parseTileHeader,
   parseEnd,selectLevel,visibleTileRange,effectiveLOD,splitIntoBatches,
   DecodePipeline,LruCache,epochToken,BatchState,classify,headroomOk,
-  batchBudget,newViewEpoch,decodeRefs,netCov,covCov}` (DOM-free seam).
+  batchBudget,newViewEpoch,decodeRefs,netCov,covCov,switchState}` where
+  `switchState()` returns the live `{imageSwitchSeq, pendingSwitch,
+  deferredIntent}` triple for the VM race vectors (read-only view, not a
+  second control path) (DOM-free seam).
 - Done when: `node --check viewer.js` passes.
 
 ### TASK-003 — viewer.js part B (flows + receive pipeline)
@@ -251,46 +270,79 @@ last_updated: 2026-09-16
   doing any of these steps before or after:
   1. `sendAbort(oldReqId)` where a live old generation exists (same socket,
      no new WS, no allocator reset);
-  2. `const myEpoch = newViewEpoch()` (ONE bump — the frozen TASK-002
-     cleanup; the returned epoch is this switch's liveness token);
+  2. `const mySwitch = ++imageSwitchSeq; pendingSwitch = {seq:mySwitch,
+     id}` AND `const myEpoch = newViewEpoch()` (ONE viewport bump for the
+     switch's own work + the switch-sequence token; the two counters have
+     SEPARATE jobs — `viewEpoch` invalidates viewport work, `mySwitch`
+     guards `/info` liveness);
   3. abort the previous in-flight `/info` fetch (`infoAbort?.abort()`) and
      start this switch's fetch under a FRESH `AbortController`
      (`infoAbort = new AbortController()`); `await` the response AND
-     `await` `.json()` — then IMMEDIATELY re-check `myEpoch ===
-     currentViewEpoch`: on mismatch ABANDON SILENTLY (return without
+     `await` `.json()` — then IMMEDIATELY re-check `mySwitch ===
+     imageSwitchSeq`: on mismatch ABANDON SILENTLY (return without
      touching camera, cache, `avgTileBytes`, or the allocator — A's slow
      fetch resolving after B's switch must not switch the server back to
-     A; the abort is best-effort cancellation, the epoch check is the
-     correctness gate, because an already-resolved fetch cannot be
-     un-resolved);
+     A; the abort is best-effort cancellation, the switch-sequence check
+     is the correctness gate, because an already-resolved fetch cannot be
+     un-resolved). A `resizeCanvas()`/re-layout between fetch start and
+     resolve changes NOTHING here — the camera/pin in step 5 re-reads the
+     LIVE canvas dimensions, so B always pins with the latest size;
   4. clear image-specific state: cache-`clear()` closing EVERY bitmap,
      discard pre-decode buffers (no `close()` pre-bitmap);
-  5. reset cam to the FROZEN initial camera (`camX=W/2, camY=H/2,
+  5. `resizeCanvas()` (re-read LIVE dims) + reset cam to the FROZEN
+     initial camera (`camX=W/2, camY=H/2,
      s=clamp(min(Vw/W,Vh/H),SCALE_MIN,SCALE_MAX)`); reset `avgTileBytes`
-     to seed;
-  6. `allocReqId()` + pin ONE Z0 generation (chunks+COMMIT via
-     `encodeViewport`/`encodeCommit`; `lodMode=0`, `format` expected `1`);
+     to seed; if `pendingSwitch.seq===mySwitch` set
+     `pendingSwitch=null`;
+  6. `allocReqId()` (handle `exhausted` → reconnect + retry once) + pin
+     ONE Z0 generation (chunks+COMMIT via `encodeViewport`/`encodeCommit`;
+     `lodMode=0`, `format` expected `1`);
   steps 4–6 run SYNCHRONOUSLY after the last guard check (no `await`
   between check and pin — no second race fits through); then await
   `networkComplete` + decode resolution (NOT `covCov==100%`), then
   effective-Z work as HEADROOM-GATED sequential budgeted batches sharing
-  `viewEpoch`. General rule for the whole file: EVERY async continuation
-  re-checks its epoch after EVERY `await` and abandoned continuations
-  return without touching shared state (`newViewIntent`'s drain/END
-  awaits resolve via epoch-cancel under the same rule).
+  `viewEpoch`; if `deferredIntent` was set while this switch was pending,
+  run ONE fresh intent with live dims after the pin (coalesced — the flag
+  clears when consumed). General rule for the whole file: EVERY async
+  continuation re-checks its liveness token after EVERY `await` and
+  abandoned continuations return without touching shared state
+  (`newViewIntent`'s drain/END awaits resolve via epoch-cancel under the
+  same rule).
 - FROZEN `newViewIntent()` (pan/zoom/resize path — SEPARATE from image
-  switching): `sendAbort(old)` where applicable → `newViewEpoch()` → budgeted
-  batch loop below. NO cache clear, NO camera reset, NO `avgTileBytes`
-  reset (the viewport moved; the image did not change).
+  switching): FIRST, if `pendingSwitch != null` (an image switch is
+  unresolved) → LOCAL-ONLY work (`resizeCanvas()` + `render()` with
+  whatever is cached) + set `deferredIntent=true` and RETURN — no
+  `sendAbort`, no REQ_ID, no network batch for the OLD image while B is
+  pending (a resize during B's fetch must not initiate A work or kill B's
+  `/info` guard, which keys off `imageSwitchSeq`, NOT `viewEpoch`).
+  Otherwise: `sendAbort(old)` where applicable → `newViewEpoch()` →
+  budgeted batch loop below. NO cache clear, NO camera reset, NO
+  `avgTileBytes` reset (the viewport moved; the image did not change).
 - Picker `onchange` handler body is exactly `await selectImage(newId)` —
   any additional `newViewEpoch()`/clear/reset/pin in the handler is a
   double-bump bug (two epochs, potentially two Z0 generations, with the
   clear landing between the pins) and the TASK-004 single-bump vector
   fails it.
+- FROZEN production boot `boot()` (the ONLY startup flow — no glue left
+  to invent), in THIS order:
+  1. `resizeCanvas()` (DPR=1; establishes the dims every later step reads);
+  2. `fetch(/api/images)` → populate the picker from the LIVE registry
+     response via `textContent` (never hard-coded IDs, never HTML
+     interpolation; empty registry → picker shows "no images", no UTP);
+  3. `await connectWs()` (socket open + `ws.protocol` assert — NOTHING
+     below runs before this resolves; no UTP byte may be constructed,
+     let alone sent, pre-open);
+  4. `await selectImage(initialId)` (first registry id in the live list);
+  5. install input/resize/picker handlers LAST (a resize before this point
+     has no pipeline to disturb; a resize during step 4's `/info` takes
+     the `pendingSwitch` deferral path above).
+  `boot()` is idempotent-guarded (second call while one is in flight is a
+  no-op returning the first call's promise).
 - Batch loop: WAIT for `headroomOk()` (else wait `decodeDrain` event — the
   v1.7 `queueBytes<max` check is TOO WEAK and forbidden here);
   send `batchBudget()`-sized batch (chunks+COMMIT via the wire codec, fresh
-  allocator REQ_ID, `BatchState` with
+  allocator REQ_ID — `exhausted` → reconnect + retry-once, then proceed;
+  `BatchState` with
   `imageId/zoom/expectedKeys/receivedKeys={}` registered — NO skipped set
   on the batch); await `END-or-epochCancel-or-wsClose`:
   - on END → `classify(reqId)` FIRST (stale/old-epoch END → discard +
@@ -399,9 +451,35 @@ last_updated: 2026-09-16
   failed; `binaryType==="arraybuffer"` before first send; `selectImage`
   reuses the socket (no new WebSocket, allocator NOT reset — next REQ_ID is
   previous+1); only `connectWs` reconnect resets to 1.
-- Allocator behavior: first allocation is 1 (never 2); monotonic across
-  image switches; no module-global mutable counter (assert
-  `UltraTile.nextReqId === undefined` — encapsulation, not grep).
+- Allocator behavior: first allocation is `{ok:true, reqId:1}` (never 2,
+  never a bare number — call sites MUST read `.reqId` only when `.ok`);
+  monotonic across image switches; no module-global mutable counter
+  (assert `UltraTile.nextReqId === undefined` — encapsulation, not grep);
+  exhaustion: drive the closure counter to `0xFFFFFFFE`, allocate twice →
+  `{ok:true, reqId:0xFFFFFFFE}` then `{ok:false, reason:"exhausted"}`
+  (assert NO wrap to 1/0, NO throw); the batch sender on `exhausted` →
+  exactly ONE reconnect (new stub WS, fresh allocator) + retry-once with
+  `reqId===1` on the NEW socket (assert old socket untouched after the
+  reconnect decision, new socket carries the retried batch).
+- Image-switch vs viewport-intent races (`imageSwitchSeq` separation):
+  resize-during-B-fetch — `selectImage(B)` with fetch pending, then a
+  resize intent → assert NO abort of B's fetch guard, NO network batch,
+  NO REQ_ID consumed, `deferredIntent===true`; resolve B's fetch → B pins
+  EXACTLY ONCE using the POST-resize canvas dims (camera matches new
+  Vw/Vh, one Z0 COMMIT) and the deferred intent runs once after the pin.
+  Pan-during-B-fetch — same setup with a pan intent → assert no batch for
+  old image A is initiated (zero sends for A after the switch started)
+  and B still wins. Latest-dims rule — change stub canvas size twice
+  while B's fetch is pending → pinned camera reflects the LATEST dims,
+  never the fetch-start dims.
+- Boot order: stub `fetch(/api/images)` → live list `[3,9]`, stub WS with
+  controllable `open`; call `boot()` → assert picker options `["image-3",
+  "image-9"]` built via `textContent` (no hard-coded 0/1), ZERO WS sends
+  before `open` fires (capture sender output — empty), `selectImage`
+  invoked exactly once with id 3 AFTER open, handlers installed after the
+  initial pin (dispatching a synthetic resize pre-open sends nothing);
+  second concurrent `boot()` call returns the same promise (no double
+  fetch/socket).
 - FORMAT ordering: stale/foreign FORMAT=2 TILE → discarded WITHOUT touching
   current-epoch `terminalFailed`; valid current-batch FORMAT=2 →
   `terminalFailed`.
@@ -457,6 +535,11 @@ last_updated: 2026-09-16
   B, no cache touch). Only B may pin Z0.
 - `rxBytes` semantics: TILE with `payloadLen=100` adds exactly 100 (24B
   header excluded); avgTileBytes reset (seed restored on image switch).
+- Conservative planning floor: feed tiny TILEs until `avgTileBytes`
+  drops below 65536 → assert the next `batchBudget()` uses
+  `floor(freeBytes/65536)` (the floor), NOT `floor(freeBytes/avgTileBytes)`
+  (planning 30×2MiB on a tiny-tile streak is the failure mode); with
+  `avgTileBytes` above the floor the mean governs (no over-throttling).
 - Epoch cleanup: terminal-fail key K in E → `newViewEpoch()` → K
   requestable again in E+1 (incl. `serverSkippedThisEpoch` key K:
   requestable in E+1; `receivedThisEpoch` likewise cleared);
@@ -476,10 +559,14 @@ last_updated: 2026-09-16
   `DECODE_QUEUE_MAX_BYTES↔Config.DQ_BYTES`,
   `MAX_TILE_BYTES↔Config.MAX_TILE_BYTES`, `BATCH_CAP↔Config.BATCH_CAP`,
   `AVG_TILE_SEED↔Config.AVG_TILE_SEED`, `SCALE_MIN↔Config.SCALE_MIN`,
-  `SCALE_MAX↔Config.SCALE_MAX`, `MAGIC 0xAA↔Config.MAGIC`, UTP type codes
+  `SCALE_MAX↔Config.SCALE_MAX`, `MAGIC 0xAA↔UtpMessages.MAGIC`, UTP type codes
   (`T_CHUNK 0x01`, `T_TILE 0x02`, `T_ABORT 0x03`, `T_END 0x04`,
-  `T_COMMIT 0x05`), `SPAN_CAP`, `GEN_TILE_CAP` where the viewer hard-codes
-  them. Parse with regexes, evaluate MiB expressions, non-zero exit + diff
+  `T_COMMIT 0x05`↔`UtpMessages`), `SPAN_CAP`, `GEN_TILE_CAP` where the viewer
+  hard-codes them — each map entry names its Java OWNER FILE (`Config.java`
+  tuning vs `UtpMessages.java` wire; a shared value asserting against the
+  wrong file fails). Viewer-LOCAL policy (`CLOSE_UTP_ERROR=4002`,
+  `PLAN_FLOOR`) MUST have no map entry (assert their absence — shared-map
+  membership would imply a Java counterpart that must not exist). Parse with regexes, evaluate MiB expressions, non-zero exit + diff
   on mismatch. (Rule completed here: EITHER a constant is pinned here OR it
   is removed from `Config`/the viewer.)
 - Done when: `node scripts/test_viewer.cjs` + FULL `python3
