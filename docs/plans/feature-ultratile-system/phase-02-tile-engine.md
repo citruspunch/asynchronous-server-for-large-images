@@ -157,8 +157,13 @@ last_updated: 2026-09-16
    dimensions would otherwise fail the every-JPEG-is-512x512 validation):
    for every staged `$tmp/level-<n>/<x>_<y>.jpg`, query
    `vipsheader -f width/height`; any tile not exactly 512x512 is padded via
-   `vips embed "$tile" "$tile.pad" 0 0 512 512 --extend black && mv
-   "$tile.pad" "$tile"` — FROZEN fill policy: solid BLACK (0,0,0),
+   `pad="${tile%.jpg}.pad.jpg"; vips embed "$tile" "$pad[Q=85]" 0 0 512 512
+   --extend black && mv "$pad" "$tile"` — the output name MUST keep a
+   recognized `.jpg` suffix (libvips selects output format from the
+   filename suffix, so `$tile.pad` would NOT write JPEG) and MUST carry
+   `[Q=85]` (JPEG defaults to Q75, below the frozen quality); the
+   same-directory `mv` keeps replacement atomic — FROZEN fill policy: solid
+   BLACK (0,0,0),
    content anchored TOP-LEFT, pad on right/bottom (same convention as the
    synthetic Java importer, so both paths produce identical edge geometry).
    Per-file `mv` keeps replacement atomic; the pass runs BEFORE validation
@@ -264,7 +269,7 @@ if ./scripts/import_vips.sh dummy-src '../x' 2>/dev/null; then echo "invalid id 
 if ./scripts/import_vips.sh dummy-src '01' 2>/dev/null; then echo "leading-zero id must fail" >&2; exit 1; else rc=$?; [ "$rc" = "2" ] || { echo "leading-zero id must exit 2, got $rc" >&2; exit 1; }; fi
 grep -q "tile-size 512" scripts/import_vips.sh && grep -q "Q=85" scripts/import_vips.sh || { echo "shell tile-size/Q drifted" >&2; exit 1; }
 grep -q "vipsheader" scripts/import_vips.sh || { echo "vips pre-dimension gate missing" >&2; exit 1; }
-grep -q "vips embed" scripts/import_vips.sh || { echo "vips post-pad pass missing" >&2; exit 1; }
+grep -q "vips embed" scripts/import_vips.sh && grep -q '\.pad\.jpg' scripts/import_vips.sh && grep -q 'Q=85' scripts/import_vips.sh || { echo "vips post-pad pass missing/malformed (needs embed + .pad.jpg + Q=85)" >&2; exit 1; }
 if command -v vips >/dev/null 2>&1; then vips black /tmp/pad-src.png 513 777 --bands 3 && ./scripts/import_vips.sh /tmp/pad-src.png 7 && [ "$(find data/images/7 -name '*.jpg' | wc -l)" = "5" ] || { echo "513x777 vips pyramid must be 4+1=5 tiles" >&2; exit 1; }; bad=0; for j in $(find data/images/7 -name '*.jpg'); do [ "$(vipsheader -f width "$j")x$(vipsheader -f height "$j")" = "512x512" ] || { echo "unpadded edge tile: $j" >&2; bad=1; }; done; [ "$bad" = "0" ] || exit 1; ls data/images/7/.ready; else echo "SKIP vips live proof (no vips binary; bash -n + gate greps above still enforced)"; fi
 ```
 

@@ -82,7 +82,9 @@ last_updated: 2026-09-16
 - §3 sealed LOD/progressive (LOD-0-only nearest + reserved statement, Z0
   pin, clear-then-clip compositing, effective LOD per-Z recompute,
   `connectWs`/epoch-guarded `selectImage` bootstrap (single-owner
-  image-switch with `myEpoch` re-check after every `/info` await +
+  image-switch with `mySwitch === imageSwitchSeq` re-check after every
+  `/info` await (viewport `viewEpoch` churn from pan/resize MUST NOT kill
+  a valid switch) +
   `AbortController` cancel vs separate `newViewIntent()` pan/zoom/resize
   path; rapid A→B resolves to B only) + allocator + viewEpoch + ownership
   machine + FROZEN epoch cleanup order + per-batch `receivedKeys`
@@ -266,9 +268,9 @@ last_updated: 2026-09-16
     ONLY grader-assumable path): `./build.sh` + `java -cp` demos +
     `java -jar` start/stop + MANUAL browser smoke (open the page served by
     the JAR, pick images 0/1, pan/zoom; tiles + HUD update; no console
-    errors). ZERO `mvn`, ZERO Python/Node/curl/rg (coreutils/`find`/
-    `unzip`/`grep`/`seq`/`sleep`/`/dev/tcp` allowed — userland, not
-    downloads).
+    errors). ZERO `mvn`, ZERO Python/Node/curl/rg/`unzip`/`seq`
+    (bash, coreutils incl. `mktemp`, `find`, `grep`, `mkdir`, `jar`,
+    `/dev/tcp` — same assumption set as the overview + phase-01).
   - OFFLINE VALIDATION track (primed cache + test tooling): `mvn -o -q test`
     + `node scripts/test_viewer.cjs` + `python3 scripts/test_e2e_parser.py`
     + `python3 scripts/check_const_parity.py` + live-server block green
