@@ -489,8 +489,6 @@ public final class NioHttpServer implements AutoCloseable {
         }
         switch (path) {
             case "/" -> sendWeb(c, "index.html", "text/html; charset=utf-8", true);
-            case "/viewer.js" -> sendWeb(c, "viewer.js",
-                    "application/javascript; charset=utf-8", true);
             case "/styles.css" -> sendWeb(c, "styles.css",
                     "text/css; charset=utf-8", true);
             case "/healthz" -> sendHealth(c);
@@ -501,7 +499,10 @@ public final class NioHttpServer implements AutoCloseable {
                 }
             }
             default -> {
-                if (path.startsWith("/api/images/") && path.endsWith("/info")) {
+                if (path.startsWith("/js/") && path.endsWith(".js")) {
+                    sendWeb(c, path.substring(1),
+                            "application/javascript; charset=utf-8", true);
+                } else if (path.startsWith("/api/images/") && path.endsWith("/info")) {
                     sendInfo(c, path);
                 } else {
                     sendSimple(c, 404, "Not Found", "text/plain",

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Shared-constant parity check (stdlib, TEST-ONLY).
 
-Framework in phase-02: pins Java<->shell constants available now, reading TWO
-Java owners -- Config.java (operational tuning) and UtpMessages.java (wire
-magic + UTP type codes) -- plus shell duplicates (tile-size 512 and Q=85 in
-import_vips.sh, Q85 in IngestTool).
+Pins Java<->shell<->JS constants, reading TWO Java owners --
+Config.java (operational tuning) and UtpMessages.java (wire magic + UTP
+type codes) -- plus shell duplicates and the modular viewer under
+src/main/resources/web/js/ (classic scripts, load order).
 
-The JavaScript side cannot be pinned until the real viewer.js exists in
-phase-06, so this script takes a frozen --java-shell-only flag that checks
-Java+shell and exits 0 without touching viewer.js. Full JS parity is
-phase-06's completion task, never this phase's green gate.
+Phase-06 completion: full JS map covering EVERY viewer hard-code. Each map
+entry names its Java OWNER FILE (tuning vs wire; asserting against the
+wrong file fails). Viewer-local policy stays OUTSIDE the map by design:
+the browser close code and the planning floor have no Java counterpart
+and must never gain one.
 """
 import re
 import sys
@@ -40,16 +41,26 @@ def read_java_consts(path):
 
 def norm_int(expr):
     expr = expr.strip()
-    # Evaluate simple arithmetic over ints (e.g. 4 * 1024 * 1024).
-    if re.fullmatch(r"[0-9xXa-fA-F_+\-*/() \t]+", expr):
+    # Strip Java long suffix (e.g. 0xFFFFFFFEL) before evaluating.
+    if re.fullmatch(r"[0-9xXa-fA-F_+\-*/() \t]+[lL]?", expr):
+        cleaned = expr[:-1] if expr[-1:] in ("L", "l") else expr
+        cleaned = cleaned.replace("_", "")
         try:
-            return eval(expr, {"__builtins__": {}}, {})
+            return eval(cleaned, {"__builtins__": {}}, {})
         except Exception:
             return None
     m = re.fullmatch(r'"([^"]*)"', expr)
     if m:
         return m.group(1)
     return None
+
+
+def norm_float(expr):
+    expr = expr.strip().replace("_", "")
+    try:
+        return float(expr)
+    except Exception:
+        return None
 
 
 def check_config():
@@ -140,6 +151,162 @@ def check_ingest():
         fail("IngestTool.java missing Q85 wiring")
 
 
+JS_FILES = [
+    "constants.js",
+    "structures.js",
+    "state.js",
+    "geometry.js",
+    "codec.js",
+    "epoch.js",
+    "render.js",
+    "net.js",
+    "batches.js",
+    "app.js",
+]
+
+# (js_name, java_owner, java_name, kind) where kind is int/float.
+# Tuning entries MUST resolve against Config.java; wire entries MUST
+# resolve against UtpMessages.java. Asserting against the wrong file fails.
+JS_MAP = [
+    ("TILE", "Config", "TILE_SIZE", "int"),
+    ("MAX_CACHE", "Config", "CACHE_CAP", "int"),
+    ("MAX_DECODE", "Config", "DECODE_MAX", "int"),
+    ("DECODE_QUEUE_MAX_JOBS", "Config", "DECODE_QUEUE_JOBS", "int"),
+    ("DECODE_QUEUE_MAX_BYTES", "Config", "DECODE_QUEUE_BYTES", "int"),
+    ("MAX_TILE_BYTES", "Config", "MAX_TILE_BYTES", "int"),
+    ("BATCH_CAP", "Config", "BATCH_CAP", "int"),
+    ("AVG_TILE_SEED", "Config", "AVG_TILE_SEED", "int"),
+    ("SCALE_MIN", "Config", "SCALE_MIN", "float"),
+    ("SCALE_MAX", "Config", "SCALE_MAX", "float"),
+    ("SPAN_CAP", "Config", "SPAN_CAP", "int"),
+    ("GEN_TILE_CAP", "Config", "GEN_TILE_CAP", "int"),
+    ("MAGIC", "UtpMessages", "MAGIC", "int"),
+    ("T_CHUNK", "UtpMessages", "T_VIEWPORT", "int"),
+    ("T_TILE", "UtpMessages", "T_TILE", "int"),
+    ("T_ABORT", "UtpMessages", "T_ABORT", "int"),
+    ("T_END", "UtpMessages", "T_END", "int"),
+    ("T_COMMIT", "UtpMessages", "T_COMMIT", "int"),
+    ("LOD_NEAREST", "UtpMessages", "LOD_NEAREST", "int"),
+    ("FORMAT_JPEG", "UtpMessages", "FORMAT_JPEG", "int"),
+    ("REQ_ID_MAX", "UtpMessages", "REQ_ID_MAX", "int"),
+]
+
+
+def read_js_bundle():
+    d = ROOT / "src/main/resources/web/js"
+    texts = {}
+    bundle = ""
+    for name in JS_FILES:
+        p = d / name
+        if not p.exists():
+            fail(f"web/js/{name} missing")
+            continue
+        t = p.read_text()
+        texts[name] = t
+        bundle += "\n" + t
+    return texts, bundle
+
+
+def parse_js_consts(bundle):
+    consts = {}
+    for m in re.finditer(r"(?:^|\n)\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+);", bundle):
+        consts[m.group(1)] = m.group(2).strip()
+    return consts
+
+
+def norm_js_int(expr):
+    expr = expr.strip().replace("_", "")
+    if re.fullmatch(r"[0-9xXa-fA-F+\-*/() \t.]+", expr):
+        try:
+            v = eval(expr, {"__builtins__": {}}, {})
+            if isinstance(v, float) and v.is_integer():
+                return int(v)
+            return v
+        except Exception:
+            return None
+    return None
+
+
+def check_js():
+    d = ROOT / "src/main/resources/web/js"
+    if not d.is_dir():
+        fail("src/main/resources/web/js/ missing (modular viewer requires phase-06)")
+        return
+    # Stale monolith must be gone: the split is the viewer now.
+    if (ROOT / "src/main/resources/web/viewer.js").exists():
+        fail("stale src/main/resources/web/viewer.js still exists; modular js/ is the viewer")
+    texts, bundle = read_js_bundle()
+    if FAILURES:
+        return
+    js_consts = parse_js_consts(bundle)
+    cfg_path = ROOT / "src/main/java/com/ultratile/Config.java"
+    wire_path = ROOT / "src/main/java/com/ultratile/proto/UtpMessages.java"
+    cfg_consts, cfg_text = read_java_consts(cfg_path) if cfg_path.exists() else ({}, "")
+    wire_consts, wire_text = read_java_consts(wire_path) if wire_path.exists() else ({}, "")
+    # Owner separation: tuning names must not live in the wire file and
+    # wire names must not live in the tuning file.
+    for tune in ("TILE_SIZE", "CACHE_CAP", "DECODE_MAX", "SPAN_CAP", "GEN_TILE_CAP"):
+        if tune in wire_consts:
+            fail(f"owner violation: {tune} must live in Config.java, not UtpMessages.java")
+    for wire in ("MAGIC", "T_VIEWPORT", "T_TILE", "T_ABORT", "T_END", "T_COMMIT"):
+        if wire in cfg_consts:
+            fail(f"owner violation: {wire} must live in UtpMessages.java, not Config.java")
+    for js_name, owner, java_name, kind in JS_MAP:
+        if js_name not in js_consts:
+            fail(f"viewer missing const {js_name} (expected in web/js/)")
+            continue
+        owner_consts = cfg_consts if owner == "Config" else wire_consts
+        owner_file = "Config.java" if owner == "Config" else "UtpMessages.java"
+        if java_name not in owner_consts:
+            fail(f"{owner_file} missing {java_name} (owner of viewer {js_name})")
+            continue
+        if kind == "int":
+            jv = norm_js_int(js_consts[js_name])
+            want = norm_int(owner_consts[java_name])
+            if jv is None:
+                fail(f"viewer {js_name}={js_consts[js_name]!r} unparsable")
+            elif want is None:
+                fail(f"{owner_file}.{java_name}={owner_consts[java_name]!r} unparsable")
+            elif jv != want:
+                fail(f"viewer {js_name}={jv!r} != {owner}.{java_name}={want!r}")
+        else:
+            jv = norm_float(js_consts[js_name])
+            want = norm_float(owner_consts[java_name])
+            if jv is None or want is None or abs(jv - want) > 1e-12:
+                fail(f"viewer {js_name}={js_consts[js_name]!r} != {owner}.{java_name}={owner_consts[java_name]!r}")
+    # Subprotocol literal is pinned, not a const assignment.
+    if "ultratile.utp.v1" not in bundle:
+        fail("viewer must offer subprotocol ultratile.utp.v1")
+    # Viewer-local policy must stay outside the map: PLAN_FLOOR may exist
+    # in JS but must never appear as a JS_MAP entry.
+    if any(row[0] == "PLAN_FLOOR" for row in JS_MAP):
+        fail("PLAN_FLOOR must stay outside the parity map (viewer-local policy)")
+    # Bare epoch-set name must be extinct: only the epoch-suffixed set exists.
+    if re.search(r"serverSkipped(?!ThisEpoch)", bundle):
+        fail("bare serverSkipped identifier extinct; use serverSkippedThisEpoch")
+    # Browser must never attempt a script-sent codeless/1002 close.
+    if "ws.close(1002" in bundle or re.search(r"ws\.close\(\s*\)", bundle):
+        fail("browser must never send script close 1002 or codeless close")
+    # Each module must parse and index.html must load them in order.
+    for name, text in texts.items():
+        if "https://" in text or "http://" in text or "cdn" in text.lower():
+            fail(f"web/js/{name} must stay offline-clean")
+    idx = (ROOT / "src/main/resources/web/index.html").read_text() if (
+        ROOT / "src/main/resources/web/index.html").exists() else ""
+    pos = -1
+    for name in JS_FILES:
+        tag = f"/js/{name}"
+        i = idx.find(tag)
+        if i < 0:
+            fail(f"index.html missing <script> for {tag}")
+        elif i < pos:
+            fail(f"index.html loads {tag} out of load order")
+        else:
+            pos = i
+    if "/viewer.js" in idx:
+        fail("index.html must not reference the removed /viewer.js monolith")
+
+
 def main(argv):
     java_shell_only = "--java-shell-only" in argv
     check_config()
@@ -147,12 +314,7 @@ def main(argv):
     check_shell()
     check_ingest()
     if not java_shell_only:
-        v = ROOT / "src/main/resources/web/viewer.js"
-        if not v.exists():
-            fail("viewer.js missing (full parity requires phase-06)")
-        else:
-            # Phase-02 framework: JS map completes in phase-06; placeholder hook.
-            print("PARITY-INFO: viewer.js present; full JS map enforced from phase-06")
+        check_js()
     if FAILURES:
         print(f"{len(FAILURES)} parity failure(s)")
         return 1

@@ -12,16 +12,33 @@
 <label for="image">Image</label>
 <select id="image"></select>
 <span id="hud">
+<span>lod <b id="lod">0</b></span>
+<span>effZ <b id="effZ">0</b></span>
 <span>rxBytes <b id="rxBytes">0</b></span>
 <span>decodedBytes <b id="decodedBytes">0</b></span>
+<span>reqs <b id="reqs">0</b></span>
+<span>evicts <b id="evicts">0</b></span>
+<span>cache <b id="cache">0</b></span>
+<span>decJobs <b id="decJobs">0</b></span>
+<span>decBytes <b id="decBytes">0</b></span>
 <span>epoch <b id="epoch">0</b></span>
-<span>netCov <b id="netCov">0%</b></span>
-<span>covCov <b id="covCov">0%</b></span>
+<span>gen <b id="gen">0</b></span>
+<span>netCov <b id="netCov">0</b></span>
+<span>covCov <b id="covCov">0</b></span>
 </span>
 </header>
 <main>
-<canvas id="canvas"></canvas>
+<canvas id="view"></canvas>
 </main>
-<script src="/viewer.js"></script>
+<script src="/js/constants.js" defer></script>
+<script src="/js/structures.js" defer></script>
+<script src="/js/state.js" defer></script>
+<script src="/js/geometry.js" defer></script>
+<script src="/js/codec.js" defer></script>
+<script src="/js/epoch.js" defer></script>
+<script src="/js/render.js" defer></script>
+<script src="/js/net.js" defer></script>
+<script src="/js/batches.js" defer></script>
+<script src="/js/app.js" defer></script>
 </body>
 </html>
