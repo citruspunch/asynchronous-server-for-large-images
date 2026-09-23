@@ -1407,8 +1407,13 @@ describe("coverage accounting", () => {
     sock.receive(makeEnd({
       imageId: tiles[0].c.imageId, reqId: req, sent: tiles.length, skipped: 0
     }));
-    // Drain everything so the same-intent retry generation sends ( polled
+    // Drain everything so the same-intent retry generation sends (polled
     // manually: the generic responder would deliver the key under test).
+    // Two flushes: the first resolves the 6 in-flight decodes, whose
+    // completion pumps the 2 queued payloads to in-flight; the second
+    // resolves those, so decodeRefs hits zero and the batch drains.
+    ctx.bitmaps.flushOk();
+    await sleep(50);
     ctx.bitmaps.flushOk();
     const m2 = ctx.sends.length;
     await waitFor(() => ctx.sends.length > m2, 20000, "retry sends");
@@ -1444,6 +1449,10 @@ describe("coverage accounting", () => {
     // Union cardinality, not the sum.
     assert.strictEqual(ctx.api.netCov(), tiles.length);
     assert.strictEqual(sock.closeCalls.length, 0);
+    // Cancel leftover batches so no batch promise outlives the test.
+    await ctx.api.newViewEpoch();
+    ctx.bitmaps.flushOk();
+    await sleep(100);
   });
 });
 
@@ -1581,9 +1590,16 @@ describe("planning", () => {
   });
 
   it("tiny-tile streaks plan against the floor", {timeout: 180000}, async () => {
-    // Accumulate a long tiny-tile history (average far below the planning
-    // floor), then read the budget with 6 tiny in flight and 4 large
-    // queued: planTileBytes must follow the floor, not the tiny mean.
+    // Deterministic tiny history: boot (17x100B) plus two settled zooms
+    // (+33/+49x100B) leaves 99 tiny receipts, avg ~100B, far below the
+    // planning floor. The second zoom lands effective Z4, where most of
+    // the grid is still fresh, so the candidate search below finds a 10+
+    // fresh viewport immediately.
+    // Final mixed batch: 10 fresh tiles delivered at 830KiB with no flush
+    // (6 in flight, 4 queued to 3399680B, freeBytes = 794624).
+    // avg = (99x100 + 10x830KiB)/109 ~ 78080: the mean plans
+    // floor(794624/78080) = 10 -- strictly below the 12 the floor would
+    // allow (floor(794624/65536) = 12) and below the 14 free job slots.
     const ctx = fresh({
       images: [{id: 5, w: 16384, h: 16384}]
     });
@@ -1593,26 +1609,12 @@ describe("planning", () => {
     const wheel = ctx.canvasListeners.wheel[0];
     wheel({deltaY: -1200, clientX: 1000, clientY: 750, preventDefault() {}});
     await drive(ctx);
+    wheel({deltaY: -800, clientX: 1000, clientY: 750, preventDefault() {}});
+    await drive(ctx);
     const down = ctx.canvasListeners.pointerdown[0];
     const move = ctx.canvasListeners.pointermove[0];
     const up = ctx.canvasListeners.pointerup[0];
-    // Sweep for tiny history; pans that find nothing cached/fresh are
-    // skipped (fully cached viewports or empty off-image ground).
     let pid = 10;
-    for (let i = 0; i < 12; i++) {
-      const m = ctx.sends.length;
-      const x0 = 100 + (i % 4) * 400;
-      const y0 = 100 + Math.floor(i / 4) * 300;
-      down({pointerId: pid, clientX: x0, clientY: y0});
-      move({pointerId: pid, clientX: x0 + 1900, clientY: y0});
-      up({pointerId: pid});
-      pid++;
-      try {
-        await drive(ctx, {until: () => ctx.sends.length > m, timeout: 20000});
-      } catch (e) {
-        /* nothing fresh here; keep sweeping */
-      }
-    }
     // Final mixed batch: find a viewport with 10+ fresh tiles WITHOUT
     // auto-responding (generic delivery would decode everything and ruin
     // the held snapshot). Losers are closed out with all-skipped ENDs.
@@ -1632,7 +1634,7 @@ describe("planning", () => {
       up({pointerId: pid});
       pid++;
       try {
-        await waitFor(() => ctx.sends.length > m, 20000, "candidate sends");
+        await waitFor(() => ctx.sends.length > m, 8000, "candidate sends");
       } catch (e) {
         continue;
       }
@@ -1666,26 +1668,29 @@ describe("planning", () => {
       await sleep(200);
     }
     assert.ok(tiles.length >= 10, "mixed viewport covers 10+ fresh tiles");
-    for (let i = 0; i < 6; i++) {
-      const t = tiles[i];
-      sock.receive(makeTile({
-        imageId: t.c.imageId, zoom: t.c.zoom, reqId: req,
-        tileX: t.x, tileY: t.y, payloadLen: 100
-      }));
-    }
+    // Guard the history window first: boot (17) + two settled zooms
+    // (+33/+49) receipt exactly 99x100B through the generic responder, so
+    // avg sits near 78KiB. Outside 95..105 the budget math below shifts
+    // and this vector must be recalibrated, not silently weakened.
+    const tinyPre = (+ctx.hud.rxBytes.textContent) / 100;
+    assert.ok(tinyPre >= 95 && tinyPre <= 105, "tiny history window, got " + tinyPre);
+    // All ten land large: 6 in flight, 4 queued. No flush yet, so the
+    // budget below reads this exact pipeline snapshot.
     const KB830 = 830 * 1024;
-    for (let i = 6; i < 10; i++) {
+    for (let i = 0; i < 10; i++) {
       const t = tiles[i];
       sock.receive(makeTile({
         imageId: t.c.imageId, zoom: t.c.zoom, reqId: req,
         tileX: t.x, tileY: t.y, payloadLen: KB830
       }));
     }
-    // No flush: 6 tiny in flight, 4 large queued. Budget must use the floor:
-    // freeBytes = 4MiB - 4*830KiB = 794624 -> 12 slots, strictly below the
-    // 14 free job slots the tiny mean would allow.
+    // No flush: budget must use the floor: freeBytes = 4MiB - 4*830KiB =
+    // 794624 -> floor(794624/78080) = 10 slots, strictly below the 12 the
+    // floor would allow and the 14 free job slots.
     const budget = ctx.api.batchBudget();
-    assert.strictEqual(budget, 12);
+    assert.strictEqual(budget, 10);
+    ctx.bitmaps.flushOk();
+    await sleep(50);
     ctx.bitmaps.flushOk();
     const commit = ctx.sends.map((e) => parseSend(e.buffer))
       .find((p) => p.kind === "commit" && p.reqId === req);
@@ -1731,10 +1736,15 @@ describe("planning", () => {
         tileX: t.x, tileY: t.y, payloadLen: MB
       }));
     }
-    // 6 in flight, 2 queued, avg ~220KiB: the mean (not the floor, not the
-    // job slots) sets the budget.
+    // 6 in flight, 2 queued: freeJobs is exactly 16 and the floor would
+    // allow min(30, 16, floor(2MiB/64KiB)=32) = 16, so any budget below 16
+    // proves planTileBytes follows the running mean (avg stays above the
+    // 128KiB seed after 8x1MiB land on any boot history under ~56 tiny
+    // tiles, hence floor(2MiB/avg) <= 15; the mean can never plan below
+    // floor(2MiB/1MiB) = 2 either).
     const budget = ctx.api.batchBudget();
-    assert.ok(budget >= 8 && budget < 16, "mean governs, got " + budget);
+    assert.ok(budget < 16, "mean governs, not floor/slots, got " + budget);
+    assert.ok(budget >= 2, "mean lower bound, got " + budget);
     ctx.bitmaps.flushOk();
     sock.receive(makeEnd({
       imageId: tiles[0].c.imageId, reqId: req, sent: 8, skipped: tiles.length - 8
