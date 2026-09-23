@@ -71,12 +71,20 @@ function scheduleIntent() {
     clearTimeout(intentTimer);
     intentTimer = 0;
   }
-  return new Promise((resolve) => {
+  const p = new Promise((resolve) => {
     intentTimer = setTimeout(() => {
       intentTimer = 0;
       resolve(newViewIntent());
     }, INTENT_DEBOUNCE_MS);
   });
+  // Hygiene fork: input/resize handlers fire-and-forget this promise, and a
+  // protocol-fatal rejection (already surfaced via HUD counters +
+  // failAllBatches) must never become an unhandled rejection. Awaiting
+  // callers still observe the rejection through p itself.
+  p.catch(() => {
+    /* handled above; failure already surfaced */
+  });
+  return p;
 }
 
 async function newViewIntent() {
