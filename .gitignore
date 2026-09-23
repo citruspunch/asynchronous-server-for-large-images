@@ -20,3 +20,6 @@ data/images/*.tif*
 # Node presentation (deps installable via npm, dist rebuilt via build)
 node_modules/
 presentation/dist/
+
+# Node project files (not part of the project)
+data/images/
