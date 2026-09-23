@@ -19,6 +19,8 @@ import java.util.regex.Pattern;
 
 import com.ultratile.tiles.ImageRegistry;
 import com.ultratile.tiles.PyramidTileStore;
+import com.ultratile.ws.SessionCoordinator;
+import com.ultratile.ws.WsHandshake;
 
 /**
  * Strict lexical HTTP server plus live metadata.
@@ -97,29 +99,34 @@ public final class NioHttpServer implements AutoCloseable {
     }
 
     private void handle(SocketChannel ch) {
-        try (SocketChannel c = ch) {
-            c.configureBlocking(true);
+        boolean[] owned = {false};
+        try {
+            ch.configureBlocking(true);
             try {
-                c.socket().setSoTimeout(5000);
+                ch.socket().setSoTimeout(5000);
             } catch (IOException ignored) {
             }
-            InputStream in = c.socket().getInputStream();
-            byte[] head = readHead(in, c);
+            InputStream in = ch.socket().getInputStream();
+            byte[] head = readHead(in, ch);
             if (head == null) {
                 return;
             }
             if (head.length == 0) {
                 // Bare-LF marker from readHead.
-                sendSimple(c, 400, "Bad Request", "text/plain",
+                sendSimple(ch, 400, "Bad Request", "text/plain",
                         "bad request".getBytes(StandardCharsets.UTF_8));
                 return;
             }
-            dispatch(c, head);
+            owned[0] = false;
+            dispatch(ch, head, in, owned);
         } catch (Exception e) {
             LOG.fine("handle failed: " + e.getMessage());
-            try {
-                ch.close();
-            } catch (IOException ignored) {
+        } finally {
+            if (!owned[0]) {
+                try {
+                    ch.close();
+                } catch (IOException ignored) {
+                }
             }
         }
     }
@@ -181,7 +188,12 @@ public final class NioHttpServer implements AutoCloseable {
         return buf.toByteArray();
     }
 
-    private void dispatch(SocketChannel c, byte[] head) throws IOException {
+    /**
+     * Routes one request. Sets owned[0] when a WS session takes ownership of
+     * the socket (caller must not close it).
+     */
+    private void dispatch(SocketChannel c, byte[] head, InputStream in, boolean[] owned)
+            throws IOException {
         String hs = new String(head, StandardCharsets.ISO_8859_1);
         if (!hs.endsWith("\r\n\r\n")) {
             sendSimple(c, 400, "Bad Request", "text/plain",
@@ -327,7 +339,7 @@ public final class NioHttpServer implements AutoCloseable {
                     "bad target".getBytes(StandardCharsets.UTF_8));
             return;
         }
-        route(c, path);
+        route(c, path, headers, host, in, owned);
     }
 
     private static final class ParsedRequest {
@@ -461,7 +473,14 @@ public final class NioHttpServer implements AutoCloseable {
         return HOST_OK.matcher(a).matches();
     }
 
-    private void route(SocketChannel c, String path) throws IOException {
+    private void route(
+            SocketChannel c,
+            String path,
+            Map<String, List<String>> headers,
+            String host,
+            InputStream in,
+            boolean[] owned)
+            throws IOException {
         LOG.fine("GET " + path);
         if (path.contains("..")) {
             sendSimple(c, 404, "Not Found", "text/plain",
@@ -476,8 +495,11 @@ public final class NioHttpServer implements AutoCloseable {
                     "text/css; charset=utf-8", true);
             case "/healthz" -> sendHealth(c);
             case "/api/images" -> sendImages(c);
-            case "/ws" -> sendSimple(c, 400, "Bad Request", "text/plain",
-                    "ws handshake arrives in phase 05".getBytes(StandardCharsets.UTF_8));
+            case "/ws" -> {
+                if (handshakeWs(c, headers, host, in)) {
+                    owned[0] = true;
+                }
+            }
             default -> {
                 if (path.startsWith("/api/images/") && path.endsWith("/info")) {
                     sendInfo(c, path);
@@ -487,6 +509,61 @@ public final class NioHttpServer implements AutoCloseable {
                 }
             }
         }
+    }
+
+    /**
+     * WS opening handshake. GET, lexical head, Host, and the body gate were
+     * already enforced by dispatch. Returns true on 101 (session owns the
+     * socket afterwards). Post-header bytes are never over-read (the head
+     * reader stops exactly at CRLF CRLF), so the session continues on the
+     * same stream.
+     */
+    private boolean handshakeWs(
+            SocketChannel c,
+            Map<String, List<String>> headers,
+            String host,
+            InputStream in)
+            throws IOException {
+        WsHandshake.Result result = WsHandshake.evaluate(headers, host);
+        if (result instanceof WsHandshake.Result.Err err) {
+            StringBuilder head = new StringBuilder("HTTP/1.1 ")
+                    .append(err.failure().status())
+                    .append(' ')
+                    .append(err.failure().status() == 403 ? "Forbidden" : "Bad Request")
+                    .append("\r\nContent-Type: text/plain\r\n");
+            for (Map.Entry<String, String> e : err.failure().headers().entrySet()) {
+                head.append(e.getKey()).append(": ").append(e.getValue()).append("\r\n");
+            }
+            byte[] body = err.failure().message().getBytes(StandardCharsets.UTF_8);
+            head.append("Content-Length: ").append(body.length).append("\r\n")
+                    .append("Connection: close\r\n\r\n");
+            writeFully(c, head.toString().getBytes(StandardCharsets.US_ASCII));
+            writeFully(c, body);
+            return false;
+        }
+        WsHandshake.Result.Ok ok = (WsHandshake.Result.Ok) result;
+        String key = headers.get("sec-websocket-key").get(0).trim();
+        String accept = WsHandshake.acceptFor(key);
+        String head = "HTTP/1.1 101 Switching Protocols\r\n"
+                + "Upgrade: websocket\r\n"
+                + "Connection: Upgrade\r\n"
+                + "Sec-WebSocket-Accept: " + accept + "\r\n"
+                + "Sec-WebSocket-Protocol: ultratile.utp.v1\r\n"
+                + "\r\n";
+        writeFully(c, head.getBytes(StandardCharsets.US_ASCII));
+        LOG.fine("ws upgrade 101");
+        try {
+            c.socket().setSoTimeout(0);
+        } catch (IOException ignored) {
+        }
+        SessionCoordinator session = new SessionCoordinator(
+                in,
+                c,
+                c,
+                SessionCoordinator.defaultOpener(),
+                SessionCoordinator.defaultLookup());
+        session.start();
+        return true;
     }
 
     private void sendHealth(SocketChannel c) throws IOException {
