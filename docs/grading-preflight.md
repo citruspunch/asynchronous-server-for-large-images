@@ -272,6 +272,22 @@ accounting, generation supersession, image switching, and N concurrent clients.
 `FAILURES: 0` is the bar. It tolerates stale-generation TILEs by design; see
 [docs/implementation/known-limitations.md](implementation/known-limitations.md).
 
+### Optional: cache workload evidence
+
+Not required, and not a runtime dependency. If Node is available and the ESO
+ladder is imported, this reproduces the LFUDA cache measurements on real tiles:
+
+```sh
+node scripts/cache_workload_benchmark.cjs        # ~5 min
+```
+
+It starts and stops the server itself, needs images 4, 5 and 6 published, and
+prints `CACHE-BENCH-OK` plus a per-workload invariant list and decision
+signature. A workload whose image is absent is skipped explicitly; a demo image
+is never substituted for a ladder rung. It asserts invariants only, never byte
+totals, because those move when a pyramid is rebuilt. See
+[docs/implementation/cache-benchmark.md](implementation/cache-benchmark.md).
+
 ## 7. Manual viewer pass
 
 No browser automation is available in this repo, so do these by hand:
@@ -281,9 +297,13 @@ No browser automation is available in this repo, so do these by hand:
 - switch images mid-flight; confirm no CURRENT-generation tile carries the
   previous image's identity. A stale frame from the old generation is allowed to
   arrive and must be discarded by the client, not never sent
-- resize the window at full zoom (this is where the 40-tile cache is tightest: a
-  4K viewport at full zoom needs about 40 tiles and the cache also pins the z=0
-  overview, so one visible tile can be re-fetched. Known, not fixed)
+- resize the window at full zoom, and watch the HUD `cache` and `lfuAge` fields.
+  A 4K viewport does **not** need about 40 tiles: `effectiveLOD()` caps the union
+  of visible tiles at `UNION_CAP = 36`, below `MAX_CACHE = 40`, so one viewport
+  cannot overflow the cache and the largest single-viewport request measured on
+  image 6 was 24 tiles at both 1920x1080 and 3840x2160. The cache does still
+  reach 40 and still evicts, from history accumulated across epochs. See
+  [docs/implementation/viewer.md](implementation/viewer.md#why-the-4k-viewport-is-not-actually-tight-any-more)
 
 ## 8. If it fails
 

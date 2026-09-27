@@ -418,6 +418,22 @@ and `markNeeded()` never reorders anything. Eviction is a linear scan over at
 most 40 entries. There is no heap, no tree, and no auxiliary index, because at
 40 entries a scan is both fast enough and the thing a grader can audit.
 
+**The watermark is not monotone, and that is the implemented rule.** Step 4
+assigns the victim's priority; it does not clamp to the current value. A key can
+end up below the watermark: if viewport protection holds a key while the
+watermark rises past it, that key keeps its old priority, and when the target
+moves on it becomes the lowest-priority candidate, so the assignment lowers
+`age` again. Measured on the real ladder, `age` decreases 2 to 11 times per
+session, by 14 to 26 at the largest, and is re-climbed immediately every time;
+the trend across a session is strongly upward.
+`scripts/cache_workload_benchmark.cjs` counts the decreases and reports the
+largest one rather than treating them as faults, because they are a property of
+this rule and not evidence of a defect. Written as
+`max(age, victim.priority)` the watermark would be monotone, at the cost of never
+pricing a new admission from a dipped floor. That is a change to the policy, and
+the policy is frozen; see
+[cache-benchmark.md](cache-benchmark.md#the-age-watermark-is-not-monotone-and-the-benchmark-says-so).
+
 **Protection is eligibility, LFUDA is the choice.** Two policies are kept
 separate on purpose:
 
@@ -513,8 +529,8 @@ subset of the union, so one viewport can never ask for more than 36 tiles and
 can never evict anything by itself. The `z = 0` overview pin is inside that
 union, so it does not consume a slot outside it either.
 
-Measured on image-6 (40000 x 30131) with a scripted session of 161 viewport
-epochs, sweeping every scale to find the most cache-stressed operating point:
+Measured on image-6 (40000 x 30131), sweeping every scale to find the most
+cache-stressed operating point, over 131 viewport operations per session:
 
 | Viewport | Largest single-viewport request observed | Cache peak |
 | --- | ---: | ---: |
@@ -564,6 +580,23 @@ second and third visit is a hit.
 The LFUDA aging watermark is not idle in any of these sessions; it peaked at 25,
 55, 38 and 35 respectively, so the aging is genuinely driving decisions rather
 than sitting at zero.
+
+**Qualification, added after the benchmark was built.** That harness's `recenter`
+passed `(anchor - camera)` to a pointer handler that subtracts the delta, so it
+reflected the camera about the image centre instead of moving it there. The
+camera drifted into clipped image corners and three of the nine traces became
+degenerate, recording zero misses, zero evictions and zero re-fetches: about 51
+of the roughly 128 viewport operations contributed nothing. The two columns were
+produced by the same harness in the same session shape, so the comparison
+between them stands, but the session is not one a user would have produced.
+
+The numbers above are kept as recorded. They live in
+`scripts/cache-baseline-lru.json` as historical data, they are not regenerated,
+and `scripts/cache_workload_benchmark.cjs` prints them side by side without
+differencing them. For current, reproducible, non-degenerate measurements on
+the same images, see [cache-benchmark.md](cache-benchmark.md#results); that
+harness cannot produce an LFUDA-versus-LRU verdict, because LRU no longer exists
+to measure.
 
 ## Rendering
 
@@ -631,9 +664,16 @@ in [concurrency-and-memory.md](concurrency-and-memory.md).
 five codec functions, `selectLevel`, `visibleTileRange`, `effectiveLOD`,
 `splitIntoBatches`, `DecodePipeline`, `LfudaCache`, `epochToken`, `BatchState`,
 `classify`, `headroomOk`, `batchBudget`, `newViewEpoch`, `decodeRefs`, `netCov`,
-`covCov`, `switchState`, and `cacheSnapshot`. It is a test seam, not a public
-API; nothing in the served page calls it.
+`covCov`, `switchState`, `cameraState`, and `cacheSnapshot`. It is a test seam,
+not a public API; nothing in the served page calls it.
+
+`cameraState()` is a read-only observer of the camera, added for
+`scripts/cache_workload_benchmark.cjs`; see
+[cache-benchmark.md](cache-benchmark.md#the-one-production-seam-this-needed) for
+why it exists and why the alternative was worse.
 
 `scripts/test_viewer.cjs` concatenates the ten files into one `node:vm` script so
 the shared lexical scope behaves the way deferred script tags make it behave in a
 browser, then runs 63 tests against it. No browser, no network, no dependencies.
+`scripts/cache_workload_benchmark.cjs` loads the same ten files the same way, but
+against a live server, to measure behaviour rather than prove correctness.

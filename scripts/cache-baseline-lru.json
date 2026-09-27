@@ -1,0 +1,420 @@
+{
+  "schema": "ultratile.cache-baseline/1",
+  "kind": "historical pre-LFUDA LRU baseline",
+  "cache_policy": "LRU-40",
+  "cache_capacity": 40,
+  "captured": "2026-09-27",
+  "migration": "3011e61 feat(viewer): replace the LRU-40 bitmap cache with LFUDA-40",
+  "captured_from": "the real pre-migration viewer bundle (LruCache) at commit 1ed4857, run by scripts/measure_cache.mjs against a live server on the published ESO pyramids for images 4, 5 and 6. Measured, not simulated.",
+  "why_data_only": "LRU is not a production option in this repository and is not reimplemented for benchmarking. These numbers are preserved as evidence and are compared against by scripts/cache_workload_benchmark.cjs.",
+  "not_reproducible": "The LRU bundle no longer exists, so these exact numbers cannot be regenerated. They are evidence from one session, not a protocol requirement.",
+  "harness": {
+    "name": "measure_cache.mjs (pre-migration, external to the repository)",
+    "pacing": "sleep-paced: each viewport step awaited a settle window",
+    "step_tiles": 2,
+    "calibration_grid": "2^(-7 + i*0.2) for i in 0..90, first maximum of visibleTileRange(effective).length where effective == desired",
+    "bug": "recenter() passed (anchor - camera) to a pointermove handler that subtracts the delta, so it reflected the camera about the anchor instead of moving it to the anchor",
+    "re_fetch_definition": "a TILE frame is a re-fetch when its image:z:x:y key was already successfully transferred earlier in the session; counted from the wire, not from the cache counters. The history is never reset, so the image-switch-out-and-back trace is included.",
+    "image_switch_history": "included (see re_fetch_definition)",
+    "lfu_age": "0 (LRU has no aging watermark)"
+  },
+  "comparison_caveat": "NOT workload-comparable to scripts/cache_workload_benchmark.cjs. In these runs three of the nine traces are degenerate: 'small back-and-forth x10', 'serpentine 6 cols x 5 rows' and 'wide sweep 20 steps' each record zero misses, zero evictions and zero re-fetches, together about 51 of the ~128 viewport operations. The recorded wantAfter of 6 for the latter two shows why: the camera ended up parked in a clipped image corner where a two-tile step keeps revisiting the same handful of tiles. The cause is a sign error in the pre-migration harness, whose recenter passed (anchor - camera) to a handler that SUBTRACTS the delta, reflecting the camera about the anchor instead of moving it there. Reproducing that reflection in the canonical harness does reproduce the degenerate all-hits 'small back-and-forth' trace, but not the whole historical camera path, so the exact historical session has not been reproduced. The canonical harness recenters correctly, which makes its workload harder: it explores roughly 50 percent more tiles per session. Read these numbers as evidence about one session, never as an LFUDA-versus-LRU verdict.",
+  "internal_validity": "The LFUDA and LRU runs here were produced by the SAME harness in the same session shape, so their mutual comparison is internally consistent. What it does not support is a claim about a realistic navigation workload, because roughly 40 percent of the operations contributed nothing to it.",
+  "workloads": [
+    {
+      "id": "image-4-1080p",
+      "image_id": 4,
+      "image_dims": "10000x7533",
+      "viewport": "1920x1080",
+      "epochs": 161,
+      "requests": 31,
+      "distinct_tiles_on_wire": 117,
+      "misses": 147,
+      "evictions": 102,
+      "re_fetches": 44,
+      "re_fetch_bytes": 4499617,
+      "rx_bytes": 17498107,
+      "decoded_bytes": 17498107,
+      "decodes": 149,
+      "bitmaps_closed": 149,
+      "cache_hits": 1403,
+      "degenerate_traces": [
+        "small back-and-forth x10",
+        "serpentine 6 cols x 5 rows",
+        "wide sweep 20 steps"
+      ],
+      "per_trace": {
+        "pan left x3 then right x3": {
+          "hits": 80,
+          "misses": 26,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "pan right x3 then left x3": {
+          "hits": 108,
+          "misses": 28,
+          "evictions": 21,
+          "re_fetches": 4,
+          "re_fetch_bytes": 404932
+        },
+        "small back-and-forth x10": {
+          "hits": 400,
+          "misses": 0,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "zoom ladder x2, pan, back, revisit": {
+          "hits": 92,
+          "misses": 51,
+          "evictions": 51,
+          "re_fetches": 5,
+          "re_fetch_bytes": 631767
+        },
+        "serpentine 6 cols x 5 rows": {
+          "hits": 210,
+          "misses": 0,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "wide sweep 20 steps": {
+          "hits": 226,
+          "misses": 0,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "vertical sweep 14 steps": {
+          "hits": 177,
+          "misses": 18,
+          "evictions": 18,
+          "re_fetches": 12,
+          "re_fetch_bytes": 1468781
+        },
+        "deep zoom revisit ladder": {
+          "hits": 110,
+          "misses": 12,
+          "evictions": 12,
+          "re_fetches": 9,
+          "re_fetch_bytes": 1273667
+        },
+        "image switch out and back": {
+          "hits": 0,
+          "misses": 12,
+          "evictions": 0,
+          "re_fetches": 14,
+          "re_fetch_bytes": 720470
+        }
+      },
+      "provenance_lfuda_twin_run": {
+        "note": "the post-migration LFUDA run from the same session, recorded so the pair is auditable; the canonical harness re-measures LFUDA rather than trusting this",
+        "image_dims": "10000x7533",
+        "epochs": 161,
+        "misses": 143,
+        "evictions": 98,
+        "re_fetches": 28,
+        "re_fetch_bytes": 2534342,
+        "rx_bytes": 17030773,
+        "decoded_bytes": 17030773
+      }
+    },
+    {
+      "id": "image-5-1080p",
+      "image_id": 5,
+      "image_dims": "25000x18832",
+      "viewport": "1920x1080",
+      "epochs": 156,
+      "requests": 35,
+      "distinct_tiles_on_wire": 174,
+      "misses": 221,
+      "evictions": 176,
+      "re_fetches": 67,
+      "re_fetch_bytes": 4512697,
+      "rx_bytes": 17654361,
+      "decoded_bytes": 17654361,
+      "decodes": 223,
+      "bitmaps_closed": 223,
+      "cache_hits": 1585,
+      "degenerate_traces": [
+        "pan right x3 then left x3",
+        "small back-and-forth x10"
+      ],
+      "per_trace": {
+        "pan left x3 then right x3": {
+          "hits": 120,
+          "misses": 28,
+          "evictions": 1,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "pan right x3 then left x3": {
+          "hits": 160,
+          "misses": 0,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "small back-and-forth x10": {
+          "hits": 440,
+          "misses": 0,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "zoom ladder x2, pan, back, revisit": {
+          "hits": 143,
+          "misses": 61,
+          "evictions": 61,
+          "re_fetches": 7,
+          "re_fetch_bytes": 547948
+        },
+        "serpentine 6 cols x 5 rows": {
+          "hits": 222,
+          "misses": 9,
+          "evictions": 9,
+          "re_fetches": 9,
+          "re_fetch_bytes": 910579
+        },
+        "wide sweep 20 steps": {
+          "hits": 216,
+          "misses": 8,
+          "evictions": 8,
+          "re_fetches": 8,
+          "re_fetch_bytes": 625628
+        },
+        "vertical sweep 14 steps": {
+          "hits": 200,
+          "misses": 4,
+          "evictions": 4,
+          "re_fetches": 4,
+          "re_fetch_bytes": 323271
+        },
+        "deep zoom revisit ladder": {
+          "hits": 84,
+          "misses": 93,
+          "evictions": 93,
+          "re_fetches": 26,
+          "re_fetch_bytes": 1513951
+        },
+        "image switch out and back": {
+          "hits": 0,
+          "misses": 18,
+          "evictions": 0,
+          "re_fetches": 13,
+          "re_fetch_bytes": 591320
+        }
+      },
+      "provenance_lfuda_twin_run": {
+        "note": "the post-migration LFUDA run from the same session, recorded so the pair is auditable; the canonical harness re-measures LFUDA rather than trusting this",
+        "image_dims": "25000x18832",
+        "epochs": 156,
+        "misses": 220,
+        "evictions": 175,
+        "re_fetches": 47,
+        "re_fetch_bytes": 2586087,
+        "rx_bytes": 18098441,
+        "decoded_bytes": 18098441
+      }
+    },
+    {
+      "id": "image-6-1080p",
+      "image_id": 6,
+      "image_dims": "40000x30131",
+      "viewport": "1920x1080",
+      "epochs": 161,
+      "requests": 34,
+      "distinct_tiles_on_wire": 170,
+      "misses": 220,
+      "evictions": 175,
+      "re_fetches": 52,
+      "re_fetch_bytes": 5630992,
+      "rx_bytes": 26556454,
+      "decoded_bytes": 26556454,
+      "decodes": 222,
+      "bitmaps_closed": 222,
+      "cache_hits": 1459,
+      "degenerate_traces": [
+        "small back-and-forth x10",
+        "serpentine 6 cols x 5 rows",
+        "wide sweep 20 steps"
+      ],
+      "per_trace": {
+        "pan left x3 then right x3": {
+          "hits": 80,
+          "misses": 26,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "pan right x3 then left x3": {
+          "hits": 108,
+          "misses": 28,
+          "evictions": 21,
+          "re_fetches": 4,
+          "re_fetch_bytes": 383520
+        },
+        "small back-and-forth x10": {
+          "hits": 400,
+          "misses": 0,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "zoom ladder x2, pan, back, revisit": {
+          "hits": 123,
+          "misses": 67,
+          "evictions": 67,
+          "re_fetches": 5,
+          "re_fetch_bytes": 559988
+        },
+        "serpentine 6 cols x 5 rows": {
+          "hits": 210,
+          "misses": 0,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "wide sweep 20 steps": {
+          "hits": 226,
+          "misses": 0,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "vertical sweep 14 steps": {
+          "hits": 180,
+          "misses": 15,
+          "evictions": 15,
+          "re_fetches": 9,
+          "re_fetch_bytes": 993406
+        },
+        "deep zoom revisit ladder": {
+          "hits": 132,
+          "misses": 72,
+          "evictions": 72,
+          "re_fetches": 27,
+          "re_fetch_bytes": 3340767
+        },
+        "image switch out and back": {
+          "hits": 0,
+          "misses": 12,
+          "evictions": 0,
+          "re_fetches": 7,
+          "re_fetch_bytes": 353311
+        }
+      },
+      "provenance_lfuda_twin_run": {
+        "note": "the post-migration LFUDA run from the same session, recorded so the pair is auditable; the canonical harness re-measures LFUDA rather than trusting this",
+        "image_dims": "40000x30131",
+        "epochs": 161,
+        "misses": 223,
+        "evictions": 178,
+        "re_fetches": 29,
+        "re_fetch_bytes": 3115067,
+        "rx_bytes": 27343943,
+        "decoded_bytes": 27343943
+      }
+    },
+    {
+      "id": "image-6-4k",
+      "image_id": 6,
+      "image_dims": "40000x30131",
+      "viewport": "3840x2160",
+      "epochs": 161,
+      "requests": 30,
+      "distinct_tiles_on_wire": 192,
+      "misses": 226,
+      "evictions": 167,
+      "re_fetches": 62,
+      "re_fetch_bytes": 6516377,
+      "rx_bytes": 26890005,
+      "decoded_bytes": 26890005,
+      "decodes": 228,
+      "bitmaps_closed": 228,
+      "cache_hits": 1374,
+      "degenerate_traces": [
+        "small back-and-forth x10",
+        "serpentine 6 cols x 5 rows",
+        "wide sweep 20 steps"
+      ],
+      "per_trace": {
+        "pan left x3 then right x3": {
+          "hits": 82,
+          "misses": 16,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "pan right x3 then left x3": {
+          "hits": 92,
+          "misses": 20,
+          "evictions": 17,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "small back-and-forth x10": {
+          "hits": 320,
+          "misses": 0,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "zoom ladder x2, pan, back, revisit": {
+          "hits": 132,
+          "misses": 63,
+          "evictions": 63,
+          "re_fetches": 5,
+          "re_fetch_bytes": 559988
+        },
+        "serpentine 6 cols x 5 rows": {
+          "hits": 210,
+          "misses": 0,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "wide sweep 20 steps": {
+          "hits": 226,
+          "misses": 0,
+          "evictions": 0,
+          "re_fetches": 0,
+          "re_fetch_bytes": 0
+        },
+        "vertical sweep 14 steps": {
+          "hits": 180,
+          "misses": 15,
+          "evictions": 15,
+          "re_fetches": 9,
+          "re_fetch_bytes": 993406
+        },
+        "deep zoom revisit ladder": {
+          "hits": 132,
+          "misses": 72,
+          "evictions": 72,
+          "re_fetches": 27,
+          "re_fetch_bytes": 3340767
+        },
+        "image switch out and back": {
+          "hits": 0,
+          "misses": 40,
+          "evictions": 0,
+          "re_fetches": 21,
+          "re_fetch_bytes": 1622216
+        }
+      },
+      "provenance_lfuda_twin_run": {
+        "note": "the post-migration LFUDA run from the same session, recorded so the pair is auditable; the canonical harness re-measures LFUDA rather than trusting this",
+        "image_dims": "40000x30131",
+        "epochs": 161,
+        "misses": 218,
+        "evictions": 159,
+        "re_fetches": 37,
+        "re_fetch_bytes": 3757520,
+        "rx_bytes": 26493528,
+        "decoded_bytes": 26493528
+      }
+    }
+  ]
+}

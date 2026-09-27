@@ -106,11 +106,35 @@ both 1920x1080 and 3840x2160. See
 What is left is a real but different effect: the cache does reach 40 and does
 evict, because a long session accumulates history across viewport epochs, and
 the re-fetch rate on that history is where the replacement policy actually shows
-up. LFUDA re-fetched 30 to 44 % fewer tiles than the previous LRU-40 across
-images 4, 5 and 6, with miss and eviction counts within about 4 % either way.
+up. On the pre-migration measurement session, LFUDA re-fetched 30 to 44 % fewer
+tiles than the previous LRU-40, with miss and eviction counts within about 4 %
+either way.
+
+That comparison needs its qualification. The harness that produced it had a sign
+error in its `recenter` step, which reflected the camera about the image centre
+instead of moving it there, so the camera drifted into clipped image corners and
+three of the nine traces recorded zero misses, zero evictions and zero
+re-fetches. The two halves came from the same harness in the same session shape,
+so the comparison between them stands, but roughly 40 % of that session's
+operations contributed nothing to it. No comparable LRU measurement exists now,
+because LRU no longer exists as code; those numbers are preserved in
+`scripts/cache-baseline-lru.json`, and current non-degenerate LFUDA measurements
+are in [cache-benchmark.md](cache-benchmark.md#results). What this supports is
+"on that session, LFUDA re-fetched less", not a workload-level result.
 
 `MAX_CACHE` was deliberately left at 40. Nothing measured here implicates the
 capacity, so there is no evidence for raising it, and the memory cost is linear.
+
+### The aging watermark can decrease
+
+`age` is assigned the priority of each victim rather than clamped to the current
+value, so it can fall when viewport protection has held a key below the watermark
+and that key later becomes the victim. Measured on the real ladder it falls 2 to
+11 times per session, by at most 14 to 26, and is re-climbed immediately. This is
+the implemented rule and not a defect; it is described in
+[viewer.md](viewer.md#the-lfuda-40-decoded-bitmap-cache). An earlier version of
+the benchmark asserted monotonicity and failed; the assertion was wrong, not the
+cache.
 
 ### `covCov` is a weak signal
 

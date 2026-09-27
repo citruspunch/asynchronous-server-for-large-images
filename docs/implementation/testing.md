@@ -60,6 +60,39 @@ python3 scripts/measure_import.py
 python3 scripts/crash_recovery_test.py
 ```
 
+Optional evidence step. Not a gate, and not part of any suite:
+
+```sh
+node scripts/cache_workload_benchmark.cjs          # ~5 min, needs images 4/5/6
+```
+
+## Correctness and behaviour are different claims
+
+Two scripts load the same ten viewer modules into `node:vm` and answer different
+questions. Keeping them apart matters, because folding either into the other
+would weaken it.
+
+| | `test_viewer.cjs` | `cache_workload_benchmark.cjs` |
+| --- | --- | --- |
+| Question | is the cache **correct**? | what does the cache **do** on real workloads? |
+| Needs | nothing; no network | a live server and images 4, 5, 6 published |
+| Time | ~3 min | ~5 min |
+| In a suite | yes, offline validation track | no, optional evidence |
+| Owns | the 20 LFUDA unit and integration vectors, the `UNION_CAP` invariant | the workload definitions, the metric definitions, the deterministic decision signature, and the historical LRU fixture |
+
+`test_viewer.cjs` proves the policy. `cache_workload_benchmark.cjs` demonstrates
+it, and asserts the end-to-end properties a unit vector cannot state: bounded
+occupancy, at most one reference per viewport epoch, exactly-once `close()`, and
+that every key an epoch received is still cached when the epoch settles. Neither
+duplicates the other. The harness is documented in
+[cache-benchmark.md](cache-benchmark.md), which owns the workload and metric
+definitions and records that the pre-migration LRU baseline is a data fixture
+rather than a code path.
+
+Performance numbers are never assertions. Byte totals move when a pyramid is
+rebuilt with different libvips and JPEG versions, so the benchmark reports them
+and gates only on invariants.
+
 ## The JUnit suite
 
 126 tests across seven classes. Run with `mvn -o -q test`; the whole suite is a

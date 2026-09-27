@@ -129,6 +129,27 @@ function switchState() {
   };
 }
 
+// ---- test/debug seam: plain camera read, never read by control flow ----
+// The camera is module-private and has no HUD field, but a benchmark that
+// drives the shipped input handlers still has to know where the camera ended
+// up in order to decide the next viewport operation. Re-deriving it from
+// visibleTileRange() would quantise to a tile, and re-implementing the
+// pointer and wheel arithmetic here would be a second copy of production
+// behaviour. This is a read of state that already exists; it moves nothing.
+function cameraState() {
+  return {
+    x: camX,
+    y: camY,
+    s: camS,
+    viewW: viewW,
+    viewH: viewH,
+    epoch: viewEpoch,
+    image: currentImage ? currentImage.id : null,
+    w: currentImage ? currentImage.w : 0,
+    h: currentImage ? currentImage.h : 0
+  };
+}
+
 // ---- test/debug seam: plain cache snapshot, never read by control flow ----
 function cacheSnapshot() {
   const entries = [];

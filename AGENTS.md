@@ -37,6 +37,12 @@ python3 scripts/ws_handshake_check.py --expect 400 --no-subprotocol
 python3 scripts/real_pipeline_test.py --images 6 --clients 5
 ```
 
+Optional evidence, never a gate (needs images 4/5/6; ~5 min):
+
+```sh
+node scripts/cache_workload_benchmark.cjs
+```
+
 Run `java -jar target/ultratile-1.0.jar`, then `curl -s localhost:8080/api/images`
 to confirm it is up. Do not count tests from memory; the counts drift.
 
@@ -113,6 +119,16 @@ These are the things that break silently.
     encode viewport relevance into a fake frequency. `MAX_CACHE` stays 40;
     changing the policy is not a reason to change the capacity, and
     `Config.CACHE_CAP` must move with it or parity fails.
+  - **`age` is assigned, not clamped.** `age = victim.priority` can *decrease*,
+    when protection held a key below the watermark and that key later became the
+    victim. It falls 2 to 11 times per real session and is re-climbed at once.
+    Do not "fix" this to `max(age, ...)` and do not assert monotonicity anywhere;
+    the policy is frozen. `docs/implementation/cache-benchmark.md` owns why.
+  - **The historical LRU numbers are a data fixture, not a code path.**
+    `scripts/cache-baseline-lru.json` records the pre-migration measurements. It
+    is never executed and cannot be regenerated. Do not add an LRU class, a
+    policy flag, or a `?cache=` parameter to make it live; a policy selector is
+    exactly how the distinct-algorithm requirement stops being distinct.
 - **Shared constants live in four places**: the owning Java file
   (`Config.java` for tuning, `proto/UtpMessages.java` for wire values),
   `web/js/constants.js`, `scripts/import_vips.sh` where applicable, and the
@@ -141,8 +157,10 @@ These are the things that break silently.
 - **`import_vips.sh` must keep running under the bash 3.2 that macOS ships.** No
   `mapfile`, no `${var,,}`, no associative arrays. Use the
   `${a[@]+"${a[@]}"}` idiom for possibly-empty arrays under `set -u`.
-- **Preserve file modes.** `build.sh` and the scripts in `scripts/` (except
-  `test_viewer.cjs`) are 755 with the bit committed; Java sources are 644.
+- **Preserve file modes.** `build.sh` and the scripts in `scripts/` are 755 with
+  the bit committed, except the `.cjs` harnesses (`test_viewer.cjs`,
+  `cache_workload_benchmark.cjs`), which are 644 and run as
+  `node scripts/<name>.cjs`. Java sources are 644.
 - **Stale TILEs across a supersession are legal.** UTP/1.0 §4 allows a TILE whose
   frame already started to finish. Tests must assert the client classifies and
   discards it with the socket open, never that such a frame cannot be observed.

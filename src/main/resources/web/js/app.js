@@ -309,5 +309,6 @@ globalThis.UltraTile = {
   netCov,
   covCov,
   switchState,
+  cameraState,
   cacheSnapshot
 };

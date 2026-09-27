@@ -25,7 +25,7 @@ Optional, and only for specific tasks:
 | --- | --- | --- |
 | `libvips` (`vips`, `vipsheader`) | Importing any real image | Keg-only in Homebrew |
 | `python3` | The validation probes | stdlib only |
-| Node | `scripts/test_viewer.cjs` | no dependencies |
+| Node | `scripts/test_viewer.cjs`, `scripts/cache_workload_benchmark.cjs` | no dependencies |
 | Maven with a primed `~/.m2` | `mvn -o test` | never needed to build or run |
 | `curl` or similar | Ad-hoc HTTP probing | not required by anything |
 

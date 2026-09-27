@@ -53,6 +53,7 @@ needed to explain the implementation, it is summarized and linked to
 | Get an image in | [image-import.md](image-import.md) |
 | Know every current limit and who owns it | [configuration-and-limits.md](configuration-and-limits.md) |
 | Know how correctness is checked | [testing.md](testing.md) |
+| Measure the cache on real workloads | [cache-benchmark.md](cache-benchmark.md) |
 | Change a limit or a wire constant | [configuration-and-limits.md](configuration-and-limits.md), then [the parity check](testing.md#parity-is-a-test-not-a-style-choice) |
 
 ## The documents
@@ -160,6 +161,9 @@ inside UTP frames.
   for the evaluator-scale images (28 GB, 55 GB, 93 GB): inspect, gate, import,
   watch memory, verify, serve. This directory explains the system;
   `grading-preflight.md` tells you what to do when one of those images lands.
+- [`docs/implementation/cache-benchmark.md`](cache-benchmark.md). The LFUDA cache
+  workload harness: workload definitions, metric definitions, the deterministic
+  decision signature, and the historical pre-LFUDA LRU baseline as data.
 - [`src/main/java/com/ultratile/proto/UTP_SPEC.md`](../../src/main/java/com/ultratile/proto/UTP_SPEC.md).
   A non-normative pointer to the spec plus a golden packet-offset table, kept next
   to the codec.
