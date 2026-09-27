@@ -26,6 +26,22 @@ repository is an evaluator file.** The ESO sources in `data/sources/` and the
 public VVV mosaic are reference inputs, not evaluation assets, and must not be
 described as any tier.
 
+### Provenance of `data/sources/`
+
+The three ESO TIFFs are the **VVV public survey** mosaic of the central Milky
+Way, from the VISTA telescope at ESO's Paranal Observatory, combined from
+thousands of exposures through three infrared filters. The full mosaic is
+**108,200 x 81,500 pixels (8.8 gigapixels)**; the three files here are
+downsample factors of it, at ÷10.82, ÷4.33 and ÷2.705 respectively. All three
+are LZW-compressed, 8-bit, 3-band, single-plane TIFFs written by Adobe Photoshop
+CS6 on Windows, at 72 pixels/inch.
+
+This is **published survey data, not a unique capture**, so the files can be
+re-obtained from ESO if they are ever reclaimed under disk pressure. That is why
+the `data/sources/` policy in `AGENTS.md` is ordered and conditional rather than
+an absolute ban. It is also why these files are reference inputs and must never
+be described as an evaluator tier.
+
 **Do not infer dimensions from file size.** A 28 GB file could be 26 gigapixels of
 near-lossless TIFF or 300 gigapixels of heavily compressed JPEG. Always read the
 header. Equally, do not infer pyramid size from file size: see

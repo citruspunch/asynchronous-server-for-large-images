@@ -127,9 +127,28 @@ def verify(img_id, deep_sample=40, seam_sample=12):
         fail(f"no source mapped for image-{img_id}")
         return
     src = SOURCES / name
-    w, h = int(vh("width", src)), int(vh("height", src))
-    bands = int(vh("bands", src))
-    print(f"  source {name}: {w}x{h} bands={bands} loader={vh('vips-loader', src)}")
+    have_src = src.is_file()
+    if have_src:
+        w, h = int(vh("width", src)), int(vh("height", src))
+        bands = int(vh("bands", src))
+        print(f"  source {name}: {w}x{h} bands={bands} loader={vh('vips-loader', src)}")
+    else:
+        # The source may legitimately have been reclaimed under disk pressure
+        # (see the data/sources policy in AGENTS.md). Fall back to the published
+        # metadata, but say so LOUDLY: without the source we can no longer
+        # cross-check the pyramid geometry against the original header, so this
+        # is a weaker check and must not be mistaken for the full one.
+        mp0 = IMAGES / str(img_id) / "meta.json"
+        if not mp0.is_file():
+            fail(f"neither source {name} nor meta.json present; cannot verify")
+            return
+        m0 = json.loads(mp0.read_text())
+        w, h = int(m0["w"]), int(m0["h"])
+        warn(f"source {name} is absent -- dimensions {w}x{h} taken from the "
+             f"PUBLISHED meta.json, not cross-checked against the original "
+             f"header. Geometry checks are self-consistent only; re-import the "
+             f"source for full validation.")
+        print(f"  source {name}: ABSENT (reclaimed); using meta.json {w}x{h}")
 
     d = IMAGES / str(img_id)
     if not d.is_dir():

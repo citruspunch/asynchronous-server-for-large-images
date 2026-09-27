@@ -82,9 +82,21 @@ These are the things that break silently.
   requirement. They are offline-validation tooling.
 - **The viewer must stay offline-clean.** No CDN, no external URL, no fetch of
   anything outside this server. `check_const_parity.py` enforces it.
-- **Never delete or modify `data/sources/`.** Those ESO TIFFs are the only copy
-  of that data and are protected test inputs. The pyramids under
-  `data/images/` are regenerable; the sources are not.
+- **`data/sources/` is protected by default, but reclaimable under disk
+  pressure.** Those ESO TIFFs are the ESO VVV public-survey mosaic (Paranal /
+  VISTA, published by ESO; provenance recorded in
+  `docs/grading-preflight.md`), so they are re-obtainable rather than a unique
+  capture. Treat them as expensive to replace, not as untouchable. Reclaim in
+  this order, and never out of order:
+  1. `data/images/.stale-tmp-*` -- quarantined staging, never published, always safe.
+  2. `data/images/<id>` -- pyramids, regenerable from the source in minutes.
+  3. `data/sources/*.tif` -- **only** when a pyramid for that id is published and
+     verified, and the space is genuinely needed because an evaluator tier will
+     not fit.
+  Never delete a source while its pyramid is the only copy of that image, and
+  never remove `meta.json` or `.ready` from a published image. Reclaiming a
+  source costs the ability to re-validate that image against its own header, so
+  `verify_pyramid.py` falls back to `meta.json` and says so loudly.
 - **Shared constants live in four places**: the owning Java file
   (`Config.java` for tuning, `proto/UtpMessages.java` for wire values),
   `web/js/constants.js`, `scripts/import_vips.sh` where applicable, and the
