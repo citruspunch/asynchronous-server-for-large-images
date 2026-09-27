@@ -38,12 +38,49 @@ VIPSHEADER = "/opt/homebrew/opt/vips/bin/vipsheader"
 TILE = 512
 MAX_TILE_BYTES = 2 * 1024 * 1024
 
-# image id -> source file (the real ladder)
+# Fallback image id -> source file. This map is only a convenience: the source
+# is really resolved by MATCHING DIMENSIONS against meta.json, so the tool works
+# for any image id the operator chooses, not just the ids this map happens to
+# name. Hardcoding ids made the tool refuse to verify an image imported under
+# any other id ("no source mapped for image-N").
 SRC = {
     4: "eso_milky_way_248MB.tif",
     5: "eso_milky_way_1.65GB.tif",
     6: "eso_milky_way_4.21GB.tif",
 }
+
+_SRC_CACHE = None
+
+
+def source_index():
+    """Map (w, h) -> source path for every readable file in data/sources."""
+    global _SRC_CACHE
+    if _SRC_CACHE is None:
+        _SRC_CACHE = {}
+        if SOURCES.is_dir():
+            for f in sorted(SOURCES.iterdir()):
+                if not f.is_file():
+                    continue
+                try:
+                    key = (int(vh("width", f)), int(vh("height", f)))
+                except Exception:
+                    continue
+                _SRC_CACHE.setdefault(key, f)
+    return _SRC_CACHE
+
+
+def resolve_source(img_id, meta):
+    """Find the source for an image by dimension match, then by the id map."""
+    if meta:
+        hit = source_index().get((int(meta["w"]), int(meta["h"])))
+        if hit:
+            return hit
+    name = SRC.get(img_id)
+    if name:
+        cand = SOURCES / name
+        if cand.is_file():
+            return cand
+    return None
 
 FAIL = []
 WARN = []
@@ -122,12 +159,19 @@ def col_mean_px(data, x, y):
 
 def verify(img_id, deep_sample=40, seam_sample=12):
     print(f"\n=== image-{img_id} ===")
-    name = SRC.get(img_id)
-    if not name:
-        fail(f"no source mapped for image-{img_id}")
-        return
-    src = SOURCES / name
-    have_src = src.is_file()
+    mp0 = IMAGES / str(img_id) / "meta.json"
+    meta0 = None
+    if mp0.is_file():
+        try:
+            meta0 = json.loads(mp0.read_text())
+        except Exception:
+            meta0 = None
+    src = resolve_source(img_id, meta0)
+    name = src.name if src else None
+    if not src:
+        warn(f"no source found for image-{img_id} in {SOURCES} (searched by "
+             f"dimensions {[meta0 and (meta0['w'], meta0['h'])]})")
+    have_src = src is not None and src.is_file()
     if have_src:
         w, h = int(vh("width", src)), int(vh("height", src))
         bands = int(vh("bands", src))
@@ -138,17 +182,16 @@ def verify(img_id, deep_sample=40, seam_sample=12):
         # metadata, but say so LOUDLY: without the source we can no longer
         # cross-check the pyramid geometry against the original header, so this
         # is a weaker check and must not be mistaken for the full one.
-        mp0 = IMAGES / str(img_id) / "meta.json"
-        if not mp0.is_file():
-            fail(f"neither source {name} nor meta.json present; cannot verify")
+        if meta0 is None:
+            fail(f"no source and no readable meta.json for image-{img_id}; cannot verify")
             return
-        m0 = json.loads(mp0.read_text())
+        m0 = meta0
         w, h = int(m0["w"]), int(m0["h"])
-        warn(f"source {name} is absent -- dimensions {w}x{h} taken from the "
+        warn(f"source {name or '(none)'} is absent -- dimensions {w}x{h} taken from the "
              f"PUBLISHED meta.json, not cross-checked against the original "
              f"header. Geometry checks are self-consistent only; re-import the "
              f"source for full validation.")
-        print(f"  source {name}: ABSENT (reclaimed); using meta.json {w}x{h}")
+        print(f"  source {name or '(none)'}: ABSENT; using meta.json {w}x{h}")
 
     d = IMAGES / str(img_id)
     if not d.is_dir():
