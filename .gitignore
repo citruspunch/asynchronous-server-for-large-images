@@ -11,6 +11,11 @@ target/
 data/images/*.tif*
 *.log
 
+# Original ultra-high-res sources for scripts/import_vips.sh. Multi-GB, never
+# committed. The data/images/ pyramids are regenerated from these, so this tree
+# holds the only irreplaceable copy — keep it clear of `rm -rf data/images/*`.
+data/sources/
+
 # IDE / OS
 .idea/
 .vscode/
@@ -23,3 +28,6 @@ presentation/dist/
 
 # Node project files (not part of the project)
 data/images/
+
+# Python bytecode from the offline-validation scripts (they import each other)
+__pycache__/

@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 
 import com.ultratile.Config;
+import com.ultratile.proto.UtpMessages;
 
 /**
  * Ceiling pyramid math plus canonical tile naming.
@@ -46,7 +47,7 @@ public final class PyramidTileStore {
         checkLevel(z, n);
         int shift = n - z;
         long div = 1L << shift;
-        long v = (w + div - 1) / div;
+        long v = ((long) w + div - 1) / div;
         return (int) Math.max(1, v);
     }
 
@@ -56,28 +57,142 @@ public final class PyramidTileStore {
         checkLevel(z, n);
         int shift = n - z;
         long div = 1L << shift;
-        long v = (h + div - 1) / div;
+        long v = ((long) h + div - 1) / div;
         return (int) Math.max(1, v);
     }
 
-    /** Tile columns at level Z. */
+    /**
+     * Tile columns at level Z.
+     *
+     * <p>Computed in {@code long} so the {@code +TILE-1} rounding step cannot
+     * wrap even for a level width within a few hundred pixels of
+     * {@link Integer#MAX_VALUE}. The result is an {@code int} because a level
+     * can never usefully have more than {@code Integer.MAX_VALUE} columns; see
+     * {@link #colsChecked} for the guarded variant used on the import path.
+     */
     public static int cols(int w, int h, int z) {
-        return (levelW(w, h, z) + TILE - 1) / TILE;
+        long lw = levelW(w, h, z);
+        return (int) ((lw + TILE - 1) / TILE);
     }
 
-    /** Tile rows at level Z. */
+    /** Tile rows at level Z. {@code long} rounding, as in {@link #cols}.} */
     public static int rows(int w, int h, int z) {
-        return (levelH(w, h, z) + TILE - 1) / TILE;
+        long lh = levelH(w, h, z);
+        return (int) ((lh + TILE - 1) / TILE);
     }
 
-    /** Total tile count across all levels. */
-    public static int totalTiles(int w, int h) {
+    /**
+     * Total tile count across all levels, as a {@code long}.
+     *
+     * <p>{@code long} is mandatory, not defensive: a 65536x65536-tile image
+     * (the largest this protocol can address) has 2^32 tiles in its finest
+     * level alone, which overflows {@code int}. Callers that compare against a
+     * cap must widen before multiplying.
+     */
+    public static long totalTiles(int w, int h) {
         int n = maxLevel(w, h);
-        int total = 0;
+        long total = 0L;
         for (int z = 0; z <= n; z++) {
-            total += cols(w, h, z) * rows(w, h, z);
+            total += (long) cols(w, h, z) * rows(w, h, z);
         }
         return total;
+    }
+
+    /**
+     * Largest image dimension, in pixels, that the UTP protocol can address.
+     *
+     * <p>Derived from the protocol's tile-coordinate bound rather than chosen:
+     * see {@link UtpMessages#maxRepresentableDim()}. This is a
+     * REPRESENTABILITY limit, not a resource policy — it is the point past
+     * which some tile of the finest level could not be named on the wire at
+     * all, no matter how the pyramid were stored.
+     */
+    public static final int MAX_REPRESENTABLE_DIM = UtpMessages.maxRepresentableDim();
+
+    /**
+     * Tiles per axis on the finest level for a {@code dim}-pixel axis.
+     *
+     * <p>Computed in {@code long}; for a legal image the result is at most
+     * {@link UtpMessages#MAX_TILES_PER_AXIS}, but the intermediate stays wide
+     * so an over-large input yields its true count instead of wrapping.
+     */
+    public static long tilesPerAxis(int dim) {
+        return (((long) dim + TILE - 1) / TILE);
+    }
+
+    /**
+     * Verifies that every tile of the finest level is addressable by the
+     * protocol, and that the dimensions are positive.
+     *
+     * <p>Single source of truth for representability: {@link ImageRegistry}
+     * (serving time) and {@link IngestTool} (import time) both call this, so
+     * they cannot disagree about which images are legal.
+     *
+     * @throws IllegalArgumentException with the specific reason
+     */
+    public static void checkRepresentable(int w, int h) {
+        if (w < 1 || h < 1) {
+            throw new IllegalArgumentException(
+                    "dimension must be >= 1: " + w + "x" + h);
+        }
+        long cols = tilesPerAxis(w);
+        long rows = tilesPerAxis(h);
+        long cap = UtpMessages.MAX_TILES_PER_AXIS;
+        if (cols > cap || rows > cap) {
+            throw new IllegalArgumentException("tile grid exceeds protocol coordinate range: "
+                    + w + "x" + h + " needs " + cols + "x" + rows + " tiles per axis but the "
+                    + "protocol addresses at most " + cap + " (coordinate bound "
+                    + UtpMessages.MAX_TILE_COORD + " x " + TILE + " px tiles = "
+                    + MAX_REPRESENTABLE_DIM + " px)");
+        }
+    }
+
+    /** True when {@link #checkRepresentable} would accept these dimensions. */
+    public static boolean isRepresentable(int w, int h) {
+        try {
+            checkRepresentable(w, h);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Pre-import feasibility summary for a candidate image.
+     *
+     * <p>Every count here is a {@code long}: pixel products and tile-count
+     * sums both exceed {@code int} for large inputs. Produced before any
+     * expensive encode so a refusal can be explained with numbers.
+     */
+    public record PyramidPlan(int w, int h, int levels, int finestCols, int finestRows,
+            long pixels, long totalTiles) {
+
+        /** Finest level index (== {@code levels - 1}). */
+        public int finestLevel() {
+            return levels - 1;
+        }
+
+        /** One-line human summary, used in import refusals and logs. */
+        public String describe() {
+            return w + "x" + h + " (" + pixels + " px, " + levels + " levels, finest "
+                    + finestCols + "x" + finestRows + " tiles, " + totalTiles + " tiles total)";
+        }
+    }
+
+    /**
+     * Builds the feasibility plan for a candidate image.
+     *
+     * <p>Requires {@code w >= 1 && h >= 1}; does not validate representability,
+     * so it can also describe an image that is about to be refused.
+     */
+    public static PyramidPlan plan(int w, int h) {
+        if (w < 1 || h < 1) {
+            throw new IllegalArgumentException("w,h must be >= 1");
+        }
+        int levels = levelCount(w, h);
+        int n = levels - 1;
+        return new PyramidPlan(w, h, levels, cols(w, h, n), rows(w, h, n),
+                (long) w * h, totalTiles(w, h));
     }
 
     private static void checkLevel(int z, int n) {
@@ -97,9 +212,18 @@ public final class PyramidTileStore {
         return "level-" + z + "/" + x + "_" + y + ".jpg";
     }
 
-    /** Default image root: {@code data/images/<canonical id>}. */
+    /**
+     * Default image root, honouring {@link Config#DATA_ROOT}. Every no-argument
+     * path helper resolves through here so the whole store moves together when
+     * {@code --data-root} is used; nothing may re-spell the literal default.
+     */
+    public static Path defaultRoot() {
+        return Path.of(Config.DATA_ROOT);
+    }
+
+    /** Default image root: {@code <data root>/<canonical id>}. */
     public static Path imageRoot(int id) {
-        return imageRoot(Path.of("data", "images"), id);
+        return imageRoot(defaultRoot(), id);
     }
 
     /** Image root under a base dir. */
@@ -110,7 +234,7 @@ public final class PyramidTileStore {
 
     /** Serving path: {@code imageRoot(id).resolve(relative)}. */
     public static Path servePath(int id, int z, int x, int y) {
-        return servePath(Path.of("data", "images"), id, z, x, y);
+        return servePath(defaultRoot(), id, z, x, y);
     }
 
     /** Serving path under a base dir. */

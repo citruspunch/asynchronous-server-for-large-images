@@ -16,7 +16,7 @@ import java.util.logging.Logger;
 import com.ultratile.Config;
 
 /**
- * Live registry over {@code data/images}: fresh snapshot per call, strict
+ * Live registry over the configured data root: fresh snapshot per call, strict
  * bounded metadata, per-ID demo ensure with repair.
  */
 public final class ImageRegistry {
@@ -26,7 +26,7 @@ public final class ImageRegistry {
     private final Path base;
 
     public ImageRegistry() {
-        this(Path.of("data", "images"));
+        this(PyramidTileStore.defaultRoot());
     }
 
     public ImageRegistry(Path base) {
@@ -164,10 +164,26 @@ public final class ImageRegistry {
             LOG.warning("ignoring meta.json with bad tile in " + dirId);
             return null;
         }
-        if (w < 1 || h < 1 || w > Config.MAX_DIM || h > Config.MAX_DIM) {
-            LOG.warning("ignoring meta.json with bad dims in " + dirId);
+        if (!PyramidTileStore.isRepresentable(w, h)) {
+            // Same rule the importer enforces, so a successfully imported image
+            // can never be dropped here. The message names the actual cause.
+            String why;
+            try {
+                PyramidTileStore.checkRepresentable(w, h);
+                why = "unknown";
+            } catch (IllegalArgumentException e) {
+                why = e.getMessage();
+            }
+            LOG.warning("ignoring meta.json in " + dirId + " (w=" + w + " h=" + h + "): " + why);
             return null;
         }
+        // NOTE: Config.IMPORT_MAX_TILES is deliberately NOT applied here. That is
+        // an import-time resource policy ("can we afford to build this?"), not a
+        // claim that the metadata is invalid or unservable. Enforcing it here
+        // would make the registry silently drop a legitimate pyramid that already
+        // exists on disk -- one imported before the cap was raised, or produced by
+        // another tool. The registry is deliberately more permissive than the
+        // importer, never stricter.
         if (name.length() > Config.META_NAME_MAX) {
             LOG.warning("ignoring meta.json with long name in " + dirId);
             return null;

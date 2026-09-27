@@ -77,7 +77,7 @@ def check_config():
         "DECODE_QUEUE_JOBS": 24,
         "DECODE_QUEUE_BYTES": 4 * 1024 * 1024,
         "JPEG_QUALITY": 85,
-        "MAX_DIM": 262144,
+        "IMPORT_MAX_TILES": 16777216,
         "IMPORT_IMAGE_MAX_DIM": 8192,
         "IMPORT_IMAGE_MAX_PIXELS": 16777216,
         "GEN_TILE_CAP": 256,
@@ -99,6 +99,8 @@ def check_config():
             fail(f"Config.{name}={consts[name]!r} (parsed {got!r}) != {want}")
     if consts.get("BIND") not in ('"127.0.0.1"',):
         fail(f"Config.BIND={consts.get('BIND')!r} != \"127.0.0.1\"")
+    if consts.get("DATA_ROOT") != '"data/images"':
+        fail(f'Config.DATA_ROOT={consts.get("DATA_ROOT")!r} != "data/images"')
     # Scale bounds are doubles.
     for name in ("SCALE_MIN", "SCALE_MAX"):
         if name not in consts:
@@ -107,6 +109,88 @@ def check_config():
     text = p.read_text()
     if "QUEUE_CAP" in text:
         fail("Config.java must not contain QUEUE_CAP")
+    # The importer and the server must agree on the DEFAULT data root, or an
+    # import would publish where the registry never looks.
+    sh = ROOT / "scripts/import_vips.sh"
+    if sh.exists():
+        shtext = sh.read_text()
+        m = re.search(r'^data_root="([^"]+)"', shtext, re.M)
+        if not m:
+            fail("import_vips.sh must define data_root=\"...\"")
+        elif m.group(1) != consts.get("DATA_ROOT", "").strip('"'):
+            fail(f'import_vips.sh data_root={m.group(1)!r} != Config.DATA_ROOT '
+                 f'{consts.get("DATA_ROOT")!r}')
+        if "--data-root" not in shtext:
+            fail("import_vips.sh must accept --data-root (external-volume imports)")
+    # MAX_DIM was an arbitrary dimension ceiling (262144 px) with no derivation
+    # behind it. Representability is now DERIVED from the UTP tile-coordinate
+    # bound and lives in PyramidTileStore; Config keeps only resource policy.
+    if re.search(r"\bMAX_DIM\b", text):
+        fail("Config.java must not contain MAX_DIM (use the derived representability limit)")
+    if "PyramidTileStore" not in text:
+        fail("Config.java should point at the derived representability limit")
+
+
+def check_derived_dim_limit():
+    """The dimension ceiling must be DERIVED, and Java and shell must agree.
+
+    Guards the relationship documented in UtpMessages.maxRepresentableDim():
+    max dimension = (max tile coordinate + 1) * tile size = 65536 * 512.
+    """
+    p = ROOT / "src/main/java/com/ultratile/proto/UtpMessages.java"
+    consts, text = read_java_consts(p)
+    if norm_int(consts.get("MAX_TILE_COORD", "")) != 65535:
+        fail("UtpMessages.MAX_TILE_COORD must be 65535")
+    if norm_int(consts.get("MAX_IMAGE_ID", "")) != 65535:
+        fail("UtpMessages.MAX_IMAGE_ID must be 65535 (u16 wire field)")
+    # MAX_TILES_PER_AXIS must be the SYMBOLIC derivation, not a re-typed literal.
+    if not re.search(
+        r"MAX_TILES_PER_AXIS\s*=\s*MAX_TILE_COORD\s*\+\s*1\s*;", text
+    ):
+        fail("UtpMessages.MAX_TILES_PER_AXIS must be declared as MAX_TILE_COORD + 1")
+    if not re.search(r"maxRepresentableDim\s*\(\)", text):
+        fail("UtpMessages must derive maxRepresentableDim()")
+    if "Config.TILE_SIZE" not in text:
+        fail("maxRepresentableDim() must derive from Config.TILE_SIZE")
+    if re.search(r"\b262144\b", text):
+        fail("UtpMessages must not hardcode 262144")
+
+    # Recompute the relationship independently and pin the arithmetic.
+    cfg, _ = read_java_consts(ROOT / "src/main/java/com/ultratile/Config.java")
+    tile = norm_int(cfg.get("TILE_SIZE", ""))
+    coord = norm_int(consts.get("MAX_TILE_COORD", ""))
+    if tile != 512 or coord != 65535:
+        fail(f"cannot derive dimension limit from TILE_SIZE={tile}, MAX_TILE_COORD={coord}")
+    else:
+        derived = (coord + 1) * tile
+        if derived != 33554432:
+            fail(f"derived max dimension {derived} != 33554432")
+
+    store = ROOT / "src/main/java/com/ultratile/tiles/PyramidTileStore.java"
+    stext = store.read_text()
+    if "MAX_REPRESENTABLE_DIM" not in stext:
+        fail("PyramidTileStore must expose MAX_REPRESENTABLE_DIM")
+    if "UtpMessages.maxRepresentableDim()" not in stext:
+        fail("MAX_REPRESENTABLE_DIM must delegate to UtpMessages, not restate a literal")
+    if not re.search(r"public\s+static\s+long\s+totalTiles", stext):
+        fail("totalTiles must return long (65536x65536 tiles overflows int)")
+
+    # The shell importer must not reintroduce a literal dimension ceiling.
+    # Compare against code only: prose in comments may still mention 262144.
+    sh = ROOT / "scripts/import_vips.sh"
+    if sh.exists():
+        code = "\n".join(
+            ln for ln in sh.read_text().splitlines() if not ln.lstrip().startswith("#")
+        )
+        if re.search(r"\b262144\b", code):
+            fail("import_vips.sh must not hardcode 262144; derive MAX_DIM instead")
+        for tok in (
+            "MAX_TILE_COORD=65535",
+            "TILE=512",
+            "MAX_DIM=$((MAX_TILES_PER_AXIS * TILE))",
+        ):
+            if tok not in code:
+                fail(f"import_vips.sh missing derived limit fragment: {tok}")
 
 
 def check_wire_owner():
@@ -311,6 +395,7 @@ def main(argv):
     java_shell_only = "--java-shell-only" in argv
     check_config()
     check_wire_owner()
+    check_derived_dim_limit()
     check_shell()
     check_ingest()
     if not java_shell_only:

@@ -42,17 +42,36 @@ public final class NioHttpServer implements AutoCloseable {
 
     private final String bind;
     private final int port;
+    private final Path dataRoot;
 
     private volatile ServerSocketChannel serverChannel;
     private volatile Thread acceptThread;
     private volatile boolean started;
 
     public NioHttpServer(String bind, int port) {
+        this(bind, port, PyramidTileStore.defaultRoot());
+    }
+
+    /**
+     * Server bound to an explicit data root, so a large pyramid can live on an
+     * external volume ({@code --data-root}). Staging and published images are
+     * always siblings under this one root, so atomic rename still holds.
+     */
+    public NioHttpServer(String bind, int port, Path dataRoot) {
         if (bind == null || bind.isEmpty()) {
             throw new IllegalArgumentException("bind must be non-empty");
         }
+        if (dataRoot == null) {
+            throw new IllegalArgumentException("dataRoot must be non-null");
+        }
         this.bind = bind;
         this.port = port;
+        this.dataRoot = dataRoot;
+    }
+
+    /** Data root this instance serves pyramids from. */
+    public Path dataRoot() {
+        return dataRoot;
     }
 
     /** Binds {@code bind:port} and starts the accept loop. */
@@ -61,7 +80,7 @@ public final class NioHttpServer implements AutoCloseable {
             throw new IllegalStateException("already started");
         }
         try {
-            ImageRegistry.ensureStartup(Path.of("data", "images"));
+            ImageRegistry.ensureStartup(dataRoot);
         } catch (Exception e) {
             LOG.warning("demo ensure failed: " + e.getMessage());
         }
@@ -561,14 +580,14 @@ public final class NioHttpServer implements AutoCloseable {
                 in,
                 c,
                 c,
-                SessionCoordinator.defaultOpener(),
-                SessionCoordinator.defaultLookup());
+                SessionCoordinator.defaultOpener(dataRoot),
+                SessionCoordinator.defaultLookup(dataRoot));
         session.start();
         return true;
     }
 
     private void sendHealth(SocketChannel c) throws IOException {
-        ImageRegistry reg = new ImageRegistry();
+        ImageRegistry reg = new ImageRegistry(dataRoot);
         boolean ok = reg.get(0) != null && reg.get(1) != null;
         if (!ok) {
             sendSimple(c, 503, "Service Unavailable", "text/plain",
@@ -580,7 +599,7 @@ public final class NioHttpServer implements AutoCloseable {
     }
 
     private void sendImages(SocketChannel c) throws IOException {
-        ImageRegistry reg = new ImageRegistry();
+        ImageRegistry reg = new ImageRegistry(dataRoot);
         List<ImageRegistry.ImageInfo> list = reg.list();
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < list.size(); i++) {
@@ -610,7 +629,7 @@ public final class NioHttpServer implements AutoCloseable {
             return;
         }
         int id = Integer.parseInt(idStr);
-        ImageRegistry reg = new ImageRegistry();
+        ImageRegistry reg = new ImageRegistry(dataRoot);
         ImageRegistry.ImageInfo e = reg.get(id);
         if (e == null) {
             sendSimple(c, 404, "Not Found", "text/plain",

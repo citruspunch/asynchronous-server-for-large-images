@@ -31,7 +31,7 @@ import com.ultratile.Config;
 public final class IngestTool {
     private static final Logger LOG = Logger.getLogger(IngestTool.class.getName());
 
-    private static final Path DEFAULT_BASE = Path.of("data", "images");
+    private static final Path DEFAULT_BASE = PyramidTileStore.defaultRoot();
 
     private IngestTool() {}
 
@@ -98,6 +98,28 @@ public final class IngestTool {
         return parsed;
     }
 
+    /**
+     * Shared admission gate for both import modes.
+     *
+     * <p>Three distinct limits, each with its own reason, so a refusal always
+     * names the actual cause: positive dimensions, protocol representability
+     * (tile grid addressable on the wire), then the operational tile-count
+     * policy.
+     *
+     * @return the feasibility plan, so callers can log real numbers
+     * @throws IllegalArgumentException with the specific reason
+     */
+    static PyramidTileStore.PyramidPlan admit(int w, int h) {
+        PyramidTileStore.checkRepresentable(w, h);
+        PyramidTileStore.PyramidPlan plan = PyramidTileStore.plan(w, h);
+        if (plan.totalTiles() > Config.IMPORT_MAX_TILES) {
+            throw new IllegalArgumentException("pyramid tile count " + plan.totalTiles()
+                    + " exceeds operational limit " + Config.IMPORT_MAX_TILES
+                    + " (" + plan.describe() + ")");
+        }
+        return plan;
+    }
+
     /** Synthetic mode. */
     public static int runSynthetic(Path base, String rawId, int w, int h) throws Exception {
         int id = canonicalIdOrRefuse(rawId);
@@ -105,8 +127,10 @@ public final class IngestTool {
             return 2;
         }
         String canon = Integer.toString(id);
-        if (w < 1 || h < 1 || w > Config.MAX_DIM || h > Config.MAX_DIM) {
-            System.err.println("invalid dimensions 1.." + Config.MAX_DIM + ": " + w + "x" + h);
+        try {
+            admit(w, h);
+        } catch (IllegalArgumentException e) {
+            System.err.println("refusing synthetic image-" + canon + ": " + e.getMessage());
             return 2;
         }
         Path target = base.resolve(canon);
@@ -177,8 +201,10 @@ public final class IngestTool {
         }
         w = src.getWidth();
         h = src.getHeight();
-        if (w < 1 || h < 1 || w > Config.MAX_DIM || h > Config.MAX_DIM) {
-            System.err.println("invalid dimensions 1.." + Config.MAX_DIM + ": " + w + "x" + h);
+        try {
+            admit(w, h);
+        } catch (IllegalArgumentException e) {
+            System.err.println("refusing image-" + canon + ": " + e.getMessage());
             return 2;
         }
         recoverTmp(base, canon);
@@ -214,11 +240,29 @@ public final class IngestTool {
         }
     }
 
+    /**
+     * Publishes the staged tree with a REQUIRED atomic rename.
+     *
+     * <p>There is deliberately no non-atomic fallback. A plain
+     * {@code Files.move} degrades to copy-then-delete, and the copy order is
+     * unspecified, so the zero-byte {@code .ready} marker could land before the
+     * tiles it certifies. That would expose exactly the partial-publication
+     * state {@code .ready} exists to make unobservable, and it would do so
+     * silently. Failing loudly is the correct trade: staging
+     * ({@code .tmp-<id>}) and the target ({@code <id>}) are always siblings under
+     * one root, so a same-filesystem rename is the normal case, and a
+     * filesystem that refuses it is a real deployment problem an operator needs
+     * to see rather than a condition to paper over.
+     */
     private static void publish(Path tmp, Path target) throws IOException {
         try {
             Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);
         } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tmp, target);
+            throw new IOException("filesystem cannot publish atomically (ATOMIC_MOVE "
+                    + "unsupported for " + target.getParent() + "); refusing to publish image-"
+                    + target.getFileName() + ". A non-atomic move could expose .ready before "
+                    + "the tiles it certifies. Staging and target must be siblings on one "
+                    + "filesystem.", e);
         }
     }
 

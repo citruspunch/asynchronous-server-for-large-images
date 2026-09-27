@@ -83,12 +83,32 @@ public class SessionCoordinator {
     }
 
     public static ImageLookup defaultLookup() {
-        return id -> new ImageRegistry().get(id);
+        return defaultLookup(PyramidTileStore.defaultRoot());
+    }
+
+    /** Lookup against an explicit data root (see {@code --data-root}). */
+    public static ImageLookup defaultLookup(Path base) {
+        ImageRegistry reg = new ImageRegistry(base);
+        return reg::get;
     }
 
     public static TileOpener defaultOpener() {
+        return defaultOpener(PyramidTileStore.defaultRoot());
+    }
+
+    /**
+     * Tile opener against an explicit data root.
+     *
+     * <p>The {@code long -> int} narrowing below is deliberate and currently
+     * unreachable: coordinates are validated against the protocol bound before
+     * a session ever sees them. If it were ever reached, {@code tileRelativePath}
+     * rejects the negative value, the serving loop treats it as a skipped tile,
+     * and the count surfaces in END {@code skipped} -- it cannot yield a wrong
+     * file or a path traversal.
+     */
+    public static TileOpener defaultOpener(Path base) {
         return (id, zoom, x, y) -> {
-            Path p = PyramidTileStore.servePath(id, zoom, (int) x, (int) y);
+            Path p = PyramidTileStore.servePath(base, id, zoom, (int) x, (int) y);
             PyramidTileStore.checkSize(p);
             return FileChannel.open(p, StandardOpenOption.READ);
         };
