@@ -3,14 +3,31 @@ goal: UltraTile UTP/1.0 system — Java 21 tiling server + offline viewer + prot
 version: 1.15
 date_created: 2026-09-15
 last_updated: 2026-09-16
-status: 'Planned'
+status: 'Historical'
 tags: [feature, ultratile, java21, tiling, websocket, offline]
 plan_type: split
 ---
 
 # Introduction
 
-![Status: Planned](https://img.shields.io/badge/status-Planned-blue)
+> **Historical implementation plan.** The system has since been
+> implemented and has evolved beyond what this file describes. It is preserved
+> deliberately: it records the reasoning, the rejected alternatives, the
+> sequencing, and the validation decisions, including assumptions that later
+> turned out to be wrong. Statements here about what a phase "will" do, and any
+> constant, path, or test count it names, are historical and may be superseded.
+>
+> - Current behavior: [`docs/implementation/README.md`](../../implementation/README.md)
+> - Normative UTP behavior: [`docs/protocol/UTP-1.0.md`](../../protocol/UTP-1.0.md),
+>   which wins over every other document
+> - Unresolved constraints: [`docs/implementation/known-limitations.md`](../../implementation/known-limitations.md)
+>
+> Where this file disagrees with the code, the code is what ships.
+
+![Status: Historical](https://img.shields.io/badge/status-Historical-lightgrey)
+
+This file is the plan index for all seven phases; the same historical notice
+applies to every file in this directory.
 
 Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions.md:1-94`).
 
@@ -407,7 +424,8 @@ Build UltraTile end-to-end from empty repo (`README.md:1`, `project_instructions
   executable).
 - **CON-002**: `Config` single source for OPERATIONAL TUNING:
   `BIND=127.0.0.1`, `PORT=8080`, `T=512`, `M=40`, `D=6`, `DQ_JOBS=24`,
-  `DQ_BYTES=4MiB`, Q85, `MAX_DIM=262144`, `IMPORT_IMAGE_MAX_DIM=8192`,
+  `DQ_BYTES=4MiB`, Q85, `IMPORT_MAX_TILES=16777216` (2^24, derived),
+  `IMPORT_IMAGE_MAX_DIM=8192`,
   `IMPORT_IMAGE_MAX_PIXELS=16777216`, `GEN_TILE_CAP=256`, `BATCH_CAP=30`,
   `SPAN_CAP=128`, `WS_MSG_CAP=1024`, `MAX_TILE_BYTES=2MiB`,
   `META_MAX_BYTES=16384`, `META_NAME_MAX=128`, `REJECTED_CAP=64`,

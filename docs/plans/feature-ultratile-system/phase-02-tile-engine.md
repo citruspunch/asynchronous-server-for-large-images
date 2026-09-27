@@ -1,14 +1,28 @@
 ---
 phase: phase-02-tile-engine
 goal: GOAL-002 Ceiling store plus validated import plus strict meta plus 106-tile demos
-status: 'Planned'
+status: 'Historical'
 parent: ./overview.md
 version: 1.15
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
 
-# Phase 02 — Tile Engine ![Status: Planned](https://img.shields.io/badge/status-Planned-blue)
+# Phase 02 — Tile Engine ![Status: Historical](https://img.shields.io/badge/status-Historical-lightgrey)
+
+> **Historical implementation plan.** The system has since been
+> implemented and has evolved beyond what this file describes. It is preserved
+> deliberately: it records the reasoning, the rejected alternatives, the
+> sequencing, and the validation decisions, including assumptions that later
+> turned out to be wrong. Statements here about what a phase "will" do, and any
+> constant, path, or test count it names, are historical and may be superseded.
+>
+> - Current behavior: [`docs/implementation/README.md`](../../implementation/README.md)
+> - Normative UTP behavior: [`docs/protocol/UTP-1.0.md`](../../protocol/UTP-1.0.md),
+>   which wins over every other document
+> - Unresolved constraints: [`docs/implementation/known-limitations.md`](../../implementation/known-limitations.md)
+>
+> Where this file disagrees with the code, the code is what ships.
 
 ## Context
 
@@ -62,6 +76,72 @@ last_updated: 2026-09-16
     pyramid down to one tile; `skip_blanks -1` disables blank skipping —
     validated post-generation, never assumed per libvips version).
     (2048 → N=2; 4096 → N=3.)
+  - **PAT-001a (arithmetic width, load-bearing)**: tile-count and pixel
+    products are `long`, never `int`. This is not defensive. At the derived
+    representability ceiling (33,554,432 px/axis) the finest level alone holds
+    65,536 × 65,536 = 2^32 tiles, which overflows a signed 32-bit int; the
+    whole pyramid totals 5,726,623,061. `totalTiles` therefore returns `long`,
+    and `cols`/`rows` do their `+TILE-1` rounding in `long` so the rounding
+    step cannot wrap either. `PyramidTileStore.plan(w,h)` returns a
+    `PyramidPlan(w, h, levels, finestCols, finestRows, pixels, totalTiles)`
+    with every count widened — this is the object the importer reports before
+    doing expensive work, and the object the tests assert against.
+  - **PAT-001b (validation cost, measured on REAL images)**: full-pyramid
+    validation is retained and is NOT the bottleneck. Measured end-to-end on
+    the three real ESO imports:
+
+    | | 409 tiles | 2,470 tiles | 6,270 tiles |
+    | --- | --- | --- | --- |
+    | `dzsave` + tree transform | 1 s | 6 s | 18 s |
+    | post-pad pass | 5 s | 12 s | 19 s |
+    | validation (names + size) | 1 s | 1 s | 2 s |
+
+    The post-pad figure is **O(perimeter), not O(area)**: only genuinely short
+    edge tiles are re-encoded — 66 / 171 / 272 of them (measured, `cols + rows
+    − 1` per level) versus 409 / 2,470 / 6,270 tiles overall — at ~70 ms per
+    `vips embed` process. Validation is ~50 µs of bash per tile (whole-directory
+    scans measured at ~16 µs/file on APFS), so it stays in seconds. Correctness
+    was NOT traded for speed; no strategy change was needed.
+  - **PAT-001d (layout is adequate at grading scale, measured)**: one level is
+    one directory (`level-Z/X_Y.jpg`). Benchmarked with 262,144 files in a single
+    directory on APFS: `stat` 73 µs, `find` 4.1 s, `ls -U` 4.4 s, bash glob +
+    name extract 4.0 s, `sort` 4.4 s, create 21 s, `rm -rf` 32 s. Nothing
+    degrades non-linearly. The largest single directory in the real grading
+    ladder is 4,661 tiles (image-6 finest level), two orders of magnitude below
+    the benchmarked size, so the layout is kept — no sharding, no migration, no
+    metadata change.
+  - **PAT-001e (`IMPORT_MAX_TILES` derived, 2^24)**: the previous 2^28
+    (268,435,456) was not a useful safety policy — at the measured ~140 KB per
+    real tile it implies 37 TB, which no disk check would ever admit, while the
+    validation it nominally protected would take ~3.7 h. At the measured
+    ~50 µs/tile validation cost, 2^24 caps that at ~14 min and still leaves
+    >100× headroom over a 9 gigapixel image (45,252 tiles) and ~8× over the
+    brief's aspirational 400 gigapixels (~2.0 M tiles). The disk floor, not this
+    cap, is the real practical gate.
+  - **PAT-001f (configurable data root)**: `Config.DATA_ROOT` (default
+    `data/images`), overridable with `--data-root` on both the server and
+    `import_vips.sh`. Needed because at grading scale the source is several
+    times LARGER than its pyramid, so both may have to live on an external
+    volume. Staging and published images remain siblings under one root, so
+    atomic same-filesystem publication is preserved; canonical id validation and
+    the registry's path handling are unchanged; Java and shell defaults are
+    parity-pinned so an import can never publish where the server does not look.
+  - **PAT-001g (bounded staging quarantine)**: a crashed import leaves a
+    `.tmp-<id>/`, which the next run renames to `.stale-tmp-<id>-<epoch>`. That
+    is safe but leaked disk: at grading scale a partial pyramid is tens of GB and
+    nothing reclaimed it. Retention is now bounded to the newest
+    `ULTRASTILE_STALE_TMP_KEEP` (default 2), pruning older staging after a
+    successful publish and logging the reclaimed bytes. Target quarantine
+    (`.stale-<id>-*`) is deliberately never pruned: that content sat at the
+    published path and may be an operator's image.
+  - **PAT-001c (no dimension ceiling of its own)**: nothing in the store,
+    registry or importer picks a maximum dimension. The only dimension rule is
+    the derived representability check, and it is O(1) per request — serving a
+    33-megapixel-wide image costs exactly what serving a 2,048 px one does.
+    Large images are never decoded whole: `scripts/import_vips.sh` is the only
+    path for them, it reads the header with `vipsheader` and streams the encode
+    through `vips dzsave`, and the bounded `ImageIO` fallback refuses anything
+    over 8192 px / 16 MP precisely because it calls `read(0)`.
 - Prior-phase deps:
   - **DEP-001**: Requires phase-01 pins + `Config` (incl. `GEN_TILE_CAP`,
     `MAX_TILE_BYTES`, `META_MAX_BYTES`, `META_NAME_MAX`,
@@ -100,7 +180,9 @@ last_updated: 2026-09-16
   to `0..65535`, AND the raw string must equal `Integer.toString(parsed)`
   (rejects `01`, `0001`, `+1`, ` 1`); violations → stderr + exit 2 with NO
   path built. All subsequent paths use the canonical string.
-- Mode (a) synthetic `IngestTool <id> <w> <h>`: validate `w,h` 1..`MAX_DIM`;
+- Mode (a) synthetic `IngestTool <id> <w> <h>`: validate `w,h >= 1`, then
+  `PyramidTileStore.checkRepresentable` (DERIVED limit, see below) and the
+  `IMPORT_MAX_TILES` operational cap;
   IMPORT-START recovery (existing `.tmp-<id>/` quarantined to
   `.stale-tmp-<id>-<epoch>/`, logged, or removed — never built into blindly,
   never blocks); finest tiles from `pixel(gx,gy)`; parents
@@ -135,14 +217,30 @@ last_updated: 2026-09-16
   leading zeros, exit 2) BEFORE any path use; same `.tmp-<id>` recovery +
   ready-no-op + non-ready-quarantine as TASK-002.
 - PRE-DIMENSION GATE (frozen, before any expensive work — the vips path must
-  enforce `MAX_DIM` the way the Java importers do, not validate after the
+  enforce the same limits the Java importers do, not validate after the
   pyramid is built): query `w=$(vipsheader -f width "$src")` and
   `h=$(vipsheader -f height "$src")` (`vipsheader` ships with libvips — same
   package as `vips`, no new dependency); if either query fails → stderr +
-  exit 2; if `max(w,h) > MAX_DIM=262144` → stderr "too large" + exit 2
-  BEFORE `dzsave` (an accidentally oversized source must never pay for a
-  full pyramid it will fail afterward; vips is the scalable path so only the
-  dimension ceiling applies here, not `IMPORT_IMAGE_MAX_PIXELS`).
+  exit 2 naming the loader problem. Then a FEASIBILITY REPORT (overflow-safe,
+  bash 64-bit): pixels, level count, finest-level cols×rows, total expected
+  tiles. Refusals, each with its own reason, BEFORE `dzsave`:
+  - tiles per axis > 65,536 → "tile grid exceeds protocol coordinate range"
+    (vips is the scalable path, so only the dimension ceiling applies here,
+    not `IMPORT_IMAGE_MAX_PIXELS`);
+  - total tiles > `IMPORT_MAX_TILES` → "pyramid tile count exceeds
+    operational limit";
+  - free space on the target volume below `total_tiles × 4 KiB` (a FLOOR, not
+    an estimate — Q85 tile size is content-dependent) → "insufficient space".
+  An accidentally oversized source must never pay for a full pyramid it will
+  fail afterward.
+  > **DIMENSION CEILING IS DERIVED, NOT CHOSEN.** The shell mirrors
+  > `UtpMessages.maxRepresentableDim()`:
+  > `MAX_DIM = (MAX_TILE_COORD + 1) * TILE = 65536 * 512 = 33554432`.
+  > The previous literal `MAX_DIM=262144` had no derivation — it permitted
+  > only 512 tiles per axis where the protocol addresses 65,536, so it was
+  > 128× stricter than the wire requires and silently rejected valid images.
+  > `check_const_parity.py` asserts Java and shell agree on the derivation and
+  > that neither reintroduces a literal ceiling.
 - FROZEN exact command (portable suffix form — NO `--Q` flag, hence NO
   libvips ≥8.15 requirement; trade-off stated in Notes: suffix mode gives up
   libvips' newer direct-JPEG fast path for version portability):
@@ -179,13 +277,22 @@ last_updated: 2026-09-16
 ### TASK-004 — ImageRegistry with canonical-dirname + demo repair
 
 - Create `NEW src/main/java/com/ultratile/tiles/ImageRegistry.java`:
-  `ImageInfo(id 0..65535,name,w 1..MAX_DIM,h,levels)`; `levelsFor` all Z0..N
-  ceiling; trust iff `<id>/` has `meta.json` + `.ready`.
+  `ImageInfo(id 0..65535,name,w,h,levels)` where `w,h` must satisfy
+  `PyramidTileStore.checkRepresentable` — the SAME derived rule the importer
+  enforces, so a successfully imported image can never be silently dropped
+  here; `levelsFor` all Z0..N ceiling; trust iff `<id>/` has `meta.json` +
+  `.ready`. The registry deliberately does NOT apply `IMPORT_MAX_TILES`: that
+  is an import-time resource policy, not a validity claim, so the registry is
+  always more permissive than the importer and never stricter. Rejections log a
+  WARNING naming the actual reason.
 - Metadata via tiny STRICT hand parser accepting ONLY the exact generated
   schema (`{"id":int,"name":string,"w":int,"h":int,"levels":int,
   "tile":512}` with JSON string escapes for `name`), bounded BEFORE parsing
   (read at most `META_MAX_BYTES+1` bytes; longer → ignore dir + WARNING).
-- Require `tile==512`, `1<=w,h<=MAX_DIM`, `name.length<=META_NAME_MAX`,
+- Require `tile==512`, `PyramidTileStore.checkRepresentable(w,h)` (the DERIVED
+  limit: `ceil(dim/512) <= 65536` per axis, i.e. `dim <= 33554432`; NOT a
+  hand-picked constant, and NOT `IMPORT_MAX_TILES` — see PAT-001a),
+  `name.length<=META_NAME_MAX`,
   `name.equals("image-"+dirId)`, `levels == levelCount(w,h)`, `meta.id ==
   dirId` (positional identity), AND the directory name equals
   `Integer.toString(dirId)` (non-canonical `01` → ignored + WARNING, never

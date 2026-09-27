@@ -1,14 +1,28 @@
 ---
 phase: phase-05-concurrency-sessions
 goal: GOAL-005 Coalesced-slot sessions plus teardown plus stale-vs-invalid
-status: 'Planned'
+status: 'Historical'
 parent: ./overview.md
 version: 1.15
 date_created: 2026-09-15
 last_updated: 2026-09-16
 ---
 
-# Phase 05 — Concurrency Sessions ![Status: Planned](https://img.shields.io/badge/status-Planned-blue)
+# Phase 05 — Concurrency Sessions ![Status: Historical](https://img.shields.io/badge/status-Historical-lightgrey)
+
+> **Historical implementation plan.** The system has since been
+> implemented and has evolved beyond what this file describes. It is preserved
+> deliberately: it records the reasoning, the rejected alternatives, the
+> sequencing, and the validation decisions, including assumptions that later
+> turned out to be wrong. Statements here about what a phase "will" do, and any
+> constant, path, or test count it names, are historical and may be superseded.
+>
+> - Current behavior: [`docs/implementation/README.md`](../../implementation/README.md)
+> - Normative UTP behavior: [`docs/protocol/UTP-1.0.md`](../../protocol/UTP-1.0.md),
+>   which wins over every other document
+> - Unresolved constraints: [`docs/implementation/known-limitations.md`](../../implementation/known-limitations.md)
+>
+> Where this file disagrees with the code, the code is what ships.
 
 ## Context
 

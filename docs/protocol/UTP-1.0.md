@@ -260,7 +260,101 @@ FRESH `os.urandom(4)` key per frame; opcodes `0/1/2/8/9/A` only, RSV=0,
 control ≤ 125 unfragmented; `Origin` at most one, normalized `http://`
 authority MUST equal `Host` (absent allowed); exact `Sec-WebSocket-Accept
 = base64(sha1(key + GUID))` verified; full ultra-res images are NEVER
-served (512-px JPEG tiles only; `MAX_DIM=262144`).
+served (512-px JPEG tiles only).
+
+### §7.1 Image dimension ceiling (derived, not chosen)
+
+There is no hand-picked maximum image dimension. The ceiling is **derived**
+from the tile-coordinate space, and it is a *representability* limit only —
+never a resource or policy limit.
+
+```text
+max tile coordinate (per axis, inclusive)  = 65535
+max tiles per axis                         = 65535 + 1 = 65536
+tile size                                  = 512 px
+max representable dimension                = 65536 × 512 = 33,554,432 px
+```
+
+An image is representable when `ceil(dim / 512) ≤ 65536` on each axis. Past
+that, some tile of the finest level could not be named on the wire at all, so
+the image is unservable **regardless of storage** — which is what makes this a
+protocol fact rather than a policy choice.
+
+Two clarifications that are easy to conflate:
+
+- **Tile coordinates are u32 on the wire** (§4 offsets table: `tileX`, `tileY`,
+  and the chunk `minX/maxX/minY/maxY`), and §4 requires only "u32 shape
+  enforced". The `65535` bound is therefore a **policy choice, not a wire
+  limit**. It is retained because it is the specified, implemented and tested
+  bound, because widening it is a protocol-visible behaviour change with no
+  benefit at any plausible image size, and because keeping coordinates inside
+  16 bits means every consumer — codec, key packing, the `int` path components
+  in the tile store, and the viewer's JS number arithmetic — is trivially in
+  range. Headroom is ~309× a 9 gigapixel image. Widening it would be a UTP/1.1
+  decision and would need **no wire-format change**.
+- **Image id is a different bound.** `imageId` is a genuine u16 field, so
+  `MAX_IMAGE_ID = 0xFFFF` IS a wire width. It shares the value 65535 with
+  `MAX_TILE_COORD` by coincidence, which is exactly why the two constants have
+  distinct names (`UtpMessages.MAX_IMAGE_ID` vs `UtpMessages.MAX_TILE_COORD`).
+
+Measured safe ranges for a coordinate, should the bound ever be revisited:
+
+| Layer | Safe range | Basis |
+| --- | --- | --- |
+| Wire codec | `0..2^32-1` | `putInt` / `Integer.toUnsignedLong` |
+| Tile-key packing `(x<<32)\|y` | `0..2^32-1` | **measured** round-trip incl. `x=2^31` |
+| Tile-store path components | `0..2^31-1` | `int` params; `tileRelativePath` rejects negatives |
+| Filesystem names | unbounded | decimal `X_Y.jpg` |
+| JS viewer / browser numbers | `0..2^53` | `Number` exact; keys are strings |
+| `zoom` (u8) | ≤ 255 levels | never binding: 33.5 MP/axis needs 17 levels |
+
+Note: `SessionCoordinator.defaultOpener` narrows `long`→`int` for the path
+components. That narrowing is currently unreachable (coordinates are bounded
+before they arrive) and, if ever reached, degrades safely — the guard in
+`tileRelativePath` throws, the serving loop catches it, and the tile is counted
+in END `skipped`. It cannot produce a wrong file or a path traversal.
+
+HISTORICAL NOTE, not a requirement: an earlier revision of this system enforced
+an arbitrary dimension ceiling with no derivation, which was stricter than the
+coordinate bound required and which rejected valid images in both the importer
+and the registry. It has been removed. The derived limit above now lives in
+exactly one place, `UtpMessages.maxRepresentableDim()`, and both the importer and
+the registry derive from it, so they cannot disagree. The removed constant's
+former value and the reasoning are recorded in
+`docs/implementation/configuration-and-limits.md`, which owns that history; it
+is not restated here so it cannot drift out of sync with the code.
+
+Limits that are **not** wire semantics. The rows below are application and
+operational policy. They are recorded here only to state that they are NOT part
+of UTP/1.0's wire contract; their authoritative values, owners, and
+consequences live in `docs/implementation/configuration-and-limits.md`.
+
+| Limit | Owner | Role |
+|---|---|---|
+| Representability (33,554,432 px/axis) | `UtpMessages.maxRepresentableDim()` | Derived: the tile grid must be addressable on the wire |
+| Import tile cap (2^24) | `Config.IMPORT_MAX_TILES` | Operational: bounds generation + validation work per import |
+| Import disk floor (4 KiB/tile) | `scripts/import_vips.sh` | Operational: a minimum-impossibility check, NOT a size estimate |
+| `ImageIO` fallback (8192 px / 16 MP) | `Config.IMPORT_IMAGE_MAX_DIM/_PIXELS` | Memory: that path materializes the whole decoded image |
+
+The import tile cap bounds how much work a single import may request. It is
+NOT a defense against malformed `meta.json`: the registry does not read it, and
+the registry's own metadata handling is separately bounded by
+`Config.META_MAX_BYTES` and a strict hand parser, both of which are
+implementation safety limits rather than protocol semantics.
+
+The disk floor is a FLOOR. `4 KiB × total_tiles` is a lower bound used only to
+refuse cases that cannot possibly fit; it is not a prediction of output size and
+passing it does NOT mean the pyramid will fit. JPEG Q85 tile size is
+content-dependent, so pyramid size cannot be derived from source file size.
+Measured pyramid-to-source ratios for the three real ladder images are recorded
+in `docs/implementation/tile-pyramid-and-storage.md`; they describe those three
+inputs and are not a rule for arbitrary sources.
+
+The import tile cap and the disk floor are deliberately **not** enforced by
+`ImageRegistry`: they answer "can we afford to build this?", not "is this
+metadata valid and servable?". The registry is therefore always more permissive
+than the importer, never stricter — a pyramid that already exists on disk is
+served even if the current import policy would decline to rebuild it.
 
 ## §8 Concurrency model (honest note + open question)
 
@@ -292,11 +386,20 @@ BROWSER/SOCKET TRANSIENT (not application-managed): the JS decode queue
 rejects excess work only AFTER each WebSocket message arrives, so one
 pathological LEGAL batch (30 planned tiles × 2 MiB max TILE) can
 transiently push up to 60 MiB compressed through the WS receive path.
-Typical traffic is ~45–95 KiB/tile — 60 MiB is the adversarial bound,
-stated honestly, not the operating point. Planning shrinks that window
+60 MiB is the ADVERSARIAL bound, not the operating point. Observed tile
+payloads are content-dependent and split by corpus, so neither figure is a
+protocol "typical": the synthetic demos measure ~15–17 KB/tile (smooth
+gradient) and the real photographic ladder measures ~120–175 KB/tile
+(median ~147 KB). Planning shrinks the window
 (`planTileBytes = max(avgTileBytes, PLAN_FLOOR=65536)`) but the protocol
 does NOT bound UA socket buffering — this section says so instead of
 claiming "12 + 4 MiB" as a system total.
+
+The 40 MiB bitmap cap is a CACHE-SIZE cap, not a function of image size.
+Total image dimensions do not enter the retained-memory calculation: the
+same cap applies to a 4 MP and a 400 gigapixel image. See
+`docs/implementation/concurrency-and-memory.md` for the five separate
+memory ledgers and their measured values.
 
 ## §10 References
 
