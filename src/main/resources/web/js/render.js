@@ -73,7 +73,9 @@ function render() {
       if (p.imageId !== currentImage.id) {
         continue;
       }
-      entries.push({p, e: cache.get(k)});
+      // peek(), never an accounting lookup: how many times a frame draws a
+      // tile is a redraw count, not cache reuse, and must not move a frequency.
+      entries.push({p, e: cache.peek(k)});
     }
     entries.sort((a, b) => a.p.z - b.p.z);
     for (const {p, e} of entries) {
@@ -119,6 +121,9 @@ function updateHud() {
   set("reqs", reqCount);
   set("evicts", cache.evicts);
   set("cache", cache.size);
+  set("hits", cache.hits);
+  set("miss", cache.misses);
+  set("lfuAge", cache.age);
   set("decJobs", decodePipeline.queueJobs() + decodePipeline.inflight.size);
   set("decBytes", decodePipeline.queuedBytes);
   set("epoch", viewEpoch);

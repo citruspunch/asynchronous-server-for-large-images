@@ -87,7 +87,7 @@ normative rule it touches.
 ### [viewer.md](viewer.md)
 
 The ten-module browser client: bootstrap, image switching, camera, level
-selection, the tile ownership pipeline, the decode queue, and the LRU cache.
+selection, the tile ownership pipeline, the decode queue, and the LFUDA cache.
 
 ### [concurrency-and-memory.md](concurrency-and-memory.md)
 
@@ -113,8 +113,9 @@ Copy-and-paste commands: build, run, import, inspect, recover.
 
 The unresolved constraints in one place: what `.ready` does and does not prove,
 the atomicity guarantee's dependence on the filesystem, the missing
-`IngestTool --data-root`, the `/healthz` caveat, the 4K cache tightness, and what
-has never been measured. Read this before promising something works.
+`IngestTool --data-root`, the `/healthz` caveat, the cache re-fetch rate under a
+long session, and what has never been measured. Read this before promising
+something works.
 
 ## End-to-end shape
 
@@ -140,7 +141,7 @@ PyramidTileStore ── level math and canonical tile paths
               Browser viewer (ten deferred scripts)
                     │
                     ▼
-              Selective tile requests, bounded decode, LRU bitmap cache
+              Selective tile requests, bounded decode, LFUDA bitmap cache
 ```
 
 There is no HTTP route that serves a tile. Tiles travel over the WebSocket only,

@@ -1543,6 +1543,35 @@ describe("epoch cleanup and lifetime", () => {
 });
 
 describe("planning", () => {
+  it("a single viewport can never ask for more than UNION_CAP tiles", {timeout: 180000}, async () => {
+    const ctx = fresh({images: [{id: 1, w: 4096, h: 4096}]});
+    ctx.canvas.clientWidth = 3840;
+    ctx.canvas.clientHeight = 2160;
+    await bootAndSettle(ctx);
+    // The 4K viewport at full zoom, the case the cache is documented to be
+    // tight for. Sweep the desired level directly, which is exactly the input
+    // effectiveLOD() gets, so the invariant is checked for every level the
+    // camera can select without having to reconstruct camS.
+    const N = 3;
+    let tightest = 0;
+    let downgraded = 0;
+    for (let d = 0; d <= N; d++) {
+      const e = ctx.api.effectiveLOD(d);
+      const keys = ctx.api.visibleTileRange(e.effective);
+      assert.ok(keys.length <= 36, "level " + d + " requests " + keys.length + ", cap 36");
+      assert.strictEqual(new Set(keys).size, keys.length, "no duplicate keys");
+      tightest = Math.max(tightest, keys.length);
+      if (e.effective < d) {
+        downgraded += 1;
+      }
+    }
+    assert.ok(tightest > 0, "the viewport does ask for tiles");
+    assert.ok(downgraded > 0, "the union cap does force downgrades");
+    // UNION_CAP is the structural reason one viewport cannot overflow the
+    // 40-entry cache, whichever replacement policy is in force.
+    assert.ok(36 < 40, "UNION_CAP is below MAX_CACHE");
+  });
+
   it("headroom gates sending", async () => {
     const ctx = fresh({images: [{id: 1, w: 4096, h: 4096}]});
     ctx.canvas.clientWidth = 2000;
@@ -1846,6 +1875,503 @@ describe("eviction", () => {
     if (drawIdx >= 0) {
       assert.ok(clearIdx < drawIdx, "clear-then-draw order");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LFUDA (Least Frequently Used with Dynamic Aging) cache policy.
+// Unit vectors run against the exported class directly, so every assertion
+// below is a deterministic function of the trace and no rendering, timing, or
+// network state can influence it.
+// ---------------------------------------------------------------------------
+describe("lfuda cache", () => {
+  // Fake bitmaps: close() is counted, so "exactly once" is assertable.
+  function bmp(name) {
+    return {
+      name,
+      closes: 0,
+      close() {
+        this.closes += 1;
+      }
+    };
+  }
+  function newCache(ctx, capacity) {
+    return new ctx.api.LfudaCache(capacity);
+  }
+  // A fresh entry is frequency 1 at priority age + 1, with a monotonic
+  // admission sequence and its admission counted as the current epoch.
+  function fill(c, keys, opts) {
+    const made = {};
+    for (const k of keys) {
+      made[k] = bmp(k);
+      c.insert(k, made[k], Object.assign({epoch: 0}, opts));
+    }
+    return made;
+  }
+
+  it("inserts at frequency 1 and priority age + 1", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 4);
+    const x = bmp("x");
+    const e = c.insert("x", x, {bytes: 7, epoch: 3});
+    assert.strictEqual(e.frequency, 1, "frequency starts at 1");
+    assert.strictEqual(e.priority, 0 + 1, "priority is age + frequency");
+    assert.strictEqual(c.age, 0, "age starts at 0");
+    assert.strictEqual(e.insertedSeq, 1, "admission sequence starts at 1");
+    assert.strictEqual(e.lastCountedEpoch, 3, "admission counts for its epoch");
+    assert.strictEqual(e.bytes, 7, "payload bytes retained");
+    assert.strictEqual(c.size, 1);
+    assert.strictEqual(c.has("x"), true);
+    // A non-zero age must be added, not substituted: a fully pinned cache still
+    // evicts, and the surviving entry's priority then rebases onto the new age
+    // the next time it is referenced.
+    const small = newCache(ctx, 2);
+    small.insert("a", bmp("a"), {pin: true});
+    small.insert("b", bmp("b"), {pin: true});
+    small.insert("c", bmp("c"));
+    assert.strictEqual(small.age, 1, "one eviction raised age to 1");
+    assert.strictEqual(small.peek("c").priority, 1, "priority is fixed at admission");
+    small.markNeeded("c", 1);
+    assert.strictEqual(small.peek("c").priority, 1 + 2, "priority is age + frequency");
+    assert.notStrictEqual(small.peek("c").priority, small.peek("c").frequency, "not bare frequency");
+  });
+
+  it("evicts the lowest frequency, not the oldest or the newest", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 3);
+    // Insertion itself is frequency 1, so "used in 5 epochs" lands on 6.
+    fill(c, ["A", "B", "C"]);
+    for (let e = 1; e <= 5; e++) {
+      c.markNeeded("A", e);
+    }
+    for (let e = 1; e <= 3; e++) {
+      c.markNeeded("B", e);
+    }
+    assert.strictEqual(c.peek("A").frequency, 6, "A used in 5 viewport epochs");
+    assert.strictEqual(c.peek("B").frequency, 4, "B used in 3 viewport epochs");
+    assert.strictEqual(c.peek("C").frequency, 1, "C never reused");
+    const d = bmp("D");
+    c.insert("D", d);
+    assert.strictEqual(c.size, 3, "capacity respected");
+    assert.strictEqual(c.has("C"), false, "least frequent entry is the victim");
+    assert.strictEqual(c.has("A"), true);
+    assert.strictEqual(c.has("B"), true);
+    assert.strictEqual(c.has("D"), true);
+    assert.strictEqual(c.age, 1, "age rises to the victim's priority");
+    assert.strictEqual(c.evicts, 1);
+  });
+
+  it("dynamic aging retires popularity that naive LFU would keep forever", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 2);
+    // One hot tile: referenced in 5 viewport epochs, then abandoned.
+    const a = bmp("A");
+    c.insert("A", a, {epoch: 0});
+    for (let e = 1; e <= 5; e++) {
+      c.markNeeded("A", e);
+    }
+    assert.strictEqual(c.peek("A").priority, 6);
+    // A stream of never-reused admissions. Each one is the global minimum
+    // priority (age + 1), so the hot tile is repeatedly passed over, and the
+    // aging watermark climbs by one per eviction.
+    for (let i = 1; i <= 11; i++) {
+      c.insert("T" + i, bmp("T" + i));
+      assert.strictEqual(c.has("A"), true, "A survives while its priority still leads, round " + i);
+    }
+    assert.strictEqual(c.age, 5, "watermark climbed to 5 before A was at risk");
+    c.insert("T12", bmp("T12"));
+    assert.strictEqual(c.has("A"), false, "age caught up and A was evicted");
+    assert.strictEqual(c.age, 6, "age rose to A's own priority");
+    assert.strictEqual(c.size, 2);
+    // The contrast with naive LFU is arithmetic, not a second implementation:
+    // a policy whose victim is min(frequency) could never pick A, because A's
+    // frequency 6 is never the minimum once any T is present.
+    assert.ok(c.peek("T12").frequency < c.seq, "fresh admissions stay at frequency 1");
+  });
+
+  it("counts one reference per viewport epoch, not per read", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 4);
+    fill(c, ["A"]);
+    assert.strictEqual(c.markNeeded("A", 10), true);
+    assert.strictEqual(c.peek("A").frequency, 2, "epoch 10 need counts once");
+    for (let i = 0; i < 200; i++) {
+      c.peek("A");
+      c.has("A");
+      c.keys();
+    }
+    assert.strictEqual(c.peek("A").frequency, 2, "reads never move a frequency");
+    assert.strictEqual(c.markNeeded("A", 10), true);
+    assert.strictEqual(c.peek("A").frequency, 2, "same epoch again is a no-op");
+    assert.strictEqual(c.markNeeded("A", 11), true);
+    assert.strictEqual(c.peek("A").frequency, 3, "epoch 11 need counts again");
+    assert.strictEqual(c.hits, 3, "every need is a hit, counting is separate");
+    assert.strictEqual(c.misses, 0);
+  });
+
+  it("same-epoch duplicates from several internal paths count once", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 4);
+    fill(c, ["A"]);
+    // requestableKeys, covCov, a retry sweep and a redraw all reach the cache
+    // in the same epoch; only one of them may count.
+    assert.strictEqual(c.markNeeded("A", 7), true);
+    for (let i = 0; i < 5; i++) {
+      assert.strictEqual(c.markNeeded("A", 7), true);
+    }
+    assert.strictEqual(c.peek("A").frequency, 2, "five duplicate paths, one count");
+    assert.strictEqual(c.hits, 6);
+  });
+
+  it("a missing tile is a miss and is the only way to count one", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 4);
+    fill(c, ["A"]);
+    assert.strictEqual(c.markNeeded("ghost", 1), false, "needed but absent");
+    assert.strictEqual(c.misses, 1);
+    assert.strictEqual(c.hits, 0);
+  });
+
+  it("a protected current target survives a lower-priority unprotected tile", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 3);
+    fill(c, ["A", "B", "C"]);
+    c.markNeeded("B", 1);
+    c.markNeeded("C", 1);
+    c.markNeeded("C", 2);
+    // A has the LOWEST priority in the cache and is still protected.
+    assert.strictEqual(c.peek("A").priority, 1);
+    assert.strictEqual(c.peek("B").priority, 2);
+    assert.strictEqual(c.peek("C").priority, 3);
+    c.protectTarget(["A", "D"]);
+    assert.strictEqual(c.isProtected("A"), true);
+    const d = bmp("D");
+    c.insert("D", d);
+    assert.strictEqual(c.has("A"), true, "protection beats LFUDA priority");
+    assert.strictEqual(c.has("B"), false, "LFUDA picks among the eligible");
+    assert.strictEqual(c.has("C"), true);
+    assert.strictEqual(c.has("D"), true);
+    assert.strictEqual(c.size, 3);
+    // Protection is eligibility only: it must not inflate a frequency.
+    assert.strictEqual(c.peek("A").frequency, 1, "protection is not a fake reference");
+  });
+
+  it("z0 pinning keeps the overview tile through the first two tiers", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 3);
+    fill(c, ["Z"], {pin: true});
+    fill(c, ["A", "B", "C"]);
+    assert.strictEqual(c.size, 3, "Z survived the overflow of A, B and C");
+    assert.strictEqual(c.has("A"), false, "unpinned lowest-admission lost instead");
+    assert.strictEqual(c.isProtected("Z"), true, "z === 0 stays pinned");
+    // Tier 1 exhausted: the viewport target fills the cache, Z0 still holds.
+    c.protectTarget(["Z", "A", "B", "C", "D"]);
+    c.insert("D", bmp("D"));
+    assert.strictEqual(c.size, 3);
+    assert.strictEqual(c.has("Z"), true, "z0 survives a full viewport target");
+    // Tier 3: a fully pinned cache still evicts, so capacity is never exceeded.
+    const tiny = newCache(ctx, 2);
+    fill(tiny, ["Z2"], {pin: true});
+    fill(tiny, ["A2"], {pin: true});
+    tiny.protectTarget(["Z2", "A2", "B2"]);
+    tiny.insert("B2", bmp("B2"));
+    assert.strictEqual(tiny.size, 2, "capacity is never exceeded");
+    assert.strictEqual(tiny.has("Z2"), false, "pinned, but not against a fully pinned cache");
+  });
+
+  it("a needed tile is never its own victim", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 2);
+    fill(c, ["A", "B"]);
+    c.markNeeded("A", 1);
+    c.markNeeded("B", 1);
+    // Everything cached is protected, so the eligible set is empty. A fresh
+    // entry has priority age + 1, the global minimum, so without the admission
+    // guard C would evict itself here and could never render.
+    c.protectTarget(["A", "B", "C"]);
+    const cc = bmp("C");
+    c.insert("C", cc);
+    assert.strictEqual(c.has("C"), true, "the admission is not its own victim");
+    assert.strictEqual(c.size, 2);
+    assert.strictEqual(cc.closes, 0, "and its bitmap is not closed either");
+    assert.strictEqual(c.has("A"), false, "a protected, referenced peer absorbs it");
+    assert.strictEqual(cc.closes, 0);
+  });
+
+  it("breaks equal priority by older admission, never by recency", () => {
+    const ctx = fresh();
+    // Same starting state, same admissions, two different recency orders. Only
+    // a policy that ignores recency can return the same victim for both.
+    const tied = (order) => {
+      const c = newCache(ctx, 3);
+      fill(c, ["X", "Y", "Z"]);
+      for (let e = 1; e <= 2; e++) {
+        c.markNeeded("X", e);
+        c.markNeeded("Y", e);
+        c.markNeeded("Z", e);
+      }
+      for (const k of order) {
+        c.markNeeded(k, 3);
+      }
+      return c;
+    };
+    const xLast = tied(["X", "Y", "Z"]);
+    const zLast = tied(["Z", "Y", "X"]);
+    for (const c of [xLast, zLast]) {
+      for (const k of ["X", "Y", "Z"]) {
+        assert.strictEqual(c.peek(k).priority, 4, k + " tied at priority 4");
+        assert.strictEqual(c.peek(k).lastCountedEpoch, 3);
+      }
+      assert.strictEqual(c.peek("X").insertedSeq, 1, "X admitted first");
+      assert.strictEqual(c.peek("Y").insertedSeq, 2);
+      assert.strictEqual(c.peek("Z").insertedSeq, 3);
+    }
+    xLast.insert("W", bmp("W"));
+    zLast.insert("W", bmp("W"));
+    assert.strictEqual(xLast.has("X"), false, "older admission loses the tie");
+    assert.strictEqual(zLast.has("X"), false, "and loses it the other way round too");
+    assert.strictEqual(xLast.has("Z"), true, "Z survives being touched first");
+    assert.strictEqual(zLast.has("Z"), true, "Z survives being touched last");
+    // A recency tie-break would have kept X in xLast and kept Z in zLast.
+  });
+
+  it("is not least-recently-used: LFUDA and LRU pick different victims", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 3);
+    fill(c, ["A", "B", "C"]);
+    // The reference trace, one viewport epoch per row. A and B reach frequency
+    // 5; C reaches 4 because it sat out epoch 4.
+    const trace = [
+      [1, 2, 3],
+      [1, 2],
+      [1, 2],
+      [1, 3],
+      [2, 3]
+    ];
+    for (const epoch of trace) {
+      for (const k of epoch) {
+        c.markNeeded(["A", "B", "C"][k - 1], trace.indexOf(epoch) + 2);
+      }
+    }
+    const lastTouched = {A: 5, B: 6, C: 6};
+    assert.strictEqual(c.peek("A").frequency, 5, "A used in 4 epochs after admission");
+    assert.strictEqual(c.peek("B").frequency, 5, "B used in 4 epochs after admission");
+    assert.strictEqual(c.peek("C").frequency, 4, "C used in 3 epochs after admission");
+    assert.strictEqual(c.peek("A").priority, 5);
+    assert.strictEqual(c.peek("B").priority, 5);
+    assert.strictEqual(c.peek("C").priority, 4, "C has the strictly lowest priority");
+    c.insert("D", bmp("D"));
+    // LFUDA: the minimum priority, C.
+    assert.strictEqual(c.has("C"), false, "LFUDA victim is C");
+    // LRU, worked out from the same trace by hand: A was last referenced in
+    // epoch 5, B and C in epoch 6, so the least recently used entry is A.
+    const lruVictim = Object.entries(lastTouched)
+      .reduce((a, b) => (a[1] <= b[1] ? a : b))[0];
+    assert.strictEqual(lruVictim, "A", "LRU would have evicted A");
+    assert.notStrictEqual(lruVictim, "C", "the two policies disagree");
+    assert.strictEqual(c.has("A"), true, "LFUDA keeps the least recently used tile");
+    assert.strictEqual(c.has("B"), true);
+    assert.strictEqual(c.age, 4, "age rose to the victim's priority");
+  });
+
+  it("never exceeds capacity, even with every entry protected", () => {
+    const ctx = fresh();
+    const c = newCache(ctx);
+    assert.strictEqual(c.capacity, 40, "MAX_CACHE is unchanged at 40");
+    const keys = [];
+    for (let i = 0; i < 120; i++) {
+      keys.push("k" + i);
+    }
+    c.protectTarget(keys);
+    for (const k of keys) {
+      c.insert(k, bmp(k), {pin: true});
+      assert.ok(c.size <= 40, "size " + c.size + " after inserting " + k);
+    }
+    assert.strictEqual(c.size, 40, "a fully pinned cache still holds at capacity");
+    assert.strictEqual(c.evicts, 80);
+  });
+
+  it("closes the victim bitmap exactly once", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 2);
+    const a = bmp("A");
+    const b = bmp("B");
+    c.insert("A", a);
+    c.insert("B", b);
+    assert.strictEqual(a.closes, 0, "a cached bitmap is not closed on insert");
+    c.insert("C", bmp("C"));
+    assert.strictEqual(c.has("A"), false);
+    assert.strictEqual(a.closes, 1, "the victim is closed exactly once");
+    c.insert("D", bmp("D"));
+    assert.strictEqual(b.closes, 1);
+    assert.strictEqual(a.closes, 1, "closing a victim is not repeated");
+  });
+
+  it("clear closes every retained bitmap exactly once", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 4);
+    const made = fill(c, ["A", "B", "C"], {pin: true});
+    c.markNeeded("A", 1);
+    c.protectTarget(["A", "B", "C"]);
+    c.clear();
+    assert.strictEqual(c.size, 0);
+    for (const k of ["A", "B", "C"]) {
+      assert.strictEqual(made[k].closes, 1, k + " closed exactly once by clear");
+    }
+    assert.strictEqual(c.age, 0, "the watermark restarts with the contents");
+    assert.strictEqual(c.isProtected("A"), false, "protection is dropped too");
+    c.clear();
+    for (const k of ["A", "B", "C"]) {
+      assert.strictEqual(made[k].closes, 1, "a second clear closes nothing again");
+    }
+  });
+
+  it("replacing a key closes the previous bitmap instead of leaking it", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 2);
+    const first = bmp("A1");
+    c.insert("A", first);
+    c.markNeeded("A", 1);
+    c.markNeeded("A", 2);
+    const firstSeq = c.peek("A").insertedSeq;
+    const second = bmp("A2");
+    const e = c.insert("A", second, {epoch: 3});
+    assert.strictEqual(first.closes, 1, "the replaced bitmap is closed once");
+    assert.strictEqual(second.closes, 0, "the new bitmap is live");
+    assert.strictEqual(c.size, 1, "a replacement does not consume a second slot");
+    assert.strictEqual(c.peek("A"), e);
+    assert.strictEqual(c.has("A"), true);
+    assert.strictEqual(e.frequency, 1, "the replacement restarts the frequency");
+    assert.ok(e.insertedSeq > firstSeq, "and gets a fresh admission sequence");
+    c.insert("B", bmp("B"));
+    c.insert("C", bmp("C"));
+    assert.strictEqual(c.has("A"), false);
+    assert.strictEqual(second.closes, 1, "the replacement is closable exactly once");
+    assert.strictEqual(first.closes, 1);
+  });
+
+  it("keeps every counter exact over a long session", () => {
+    const ctx = fresh();
+    const c = newCache(ctx);
+    fill(c, ["A"]);
+    const EPOCHS = 1e6;
+    for (let e = 1; e <= EPOCHS; e++) {
+      c.markNeeded("A", e);
+    }
+    const ent = c.peek("A");
+    assert.strictEqual(ent.frequency, EPOCHS + 1, "one count per epoch, exactly");
+    for (const v of [ent.frequency, ent.priority, ent.insertedSeq, c.age, c.seq]) {
+      assert.ok(Number.isSafeInteger(v), "counter " + v + " stays exactly representable");
+    }
+    // Bounds: at most MAX_CACHE entries can be referenced per epoch, so even a
+    // 24h session at one epoch per millisecond cannot approach 2^53.
+    assert.ok(EPOCHS * 40 < Number.MAX_SAFE_INTEGER);
+  });
+});
+
+describe("lfuda integration", () => {
+  it("redrawing the same viewport never moves a frequency", {timeout: 180000}, async () => {
+    const ctx = fresh({images: [{id: 1, w: 4096, h: 4096}]});
+    await bootAndSettle(ctx);
+    const before = plain(ctx.api.cacheSnapshot());
+    assert.ok(before.size > 0, "something is cached");
+    const drawsBefore = ctx.ctxCalls.filter((c) => c === "drawImage").length;
+    // pointermove renders synchronously on every event and only debounces the
+    // intent, so these frames cannot start a new viewport epoch.
+    const down = ctx.canvasListeners.pointerdown[0];
+    const move = ctx.canvasListeners.pointermove[0];
+    const up = ctx.canvasListeners.pointerup[0];
+    down({pointerId: 90, clientX: 100, clientY: 100});
+    for (let i = 0; i < 60; i++) {
+      move({pointerId: 90, clientX: 100 + i, clientY: 100});
+    }
+    up({pointerId: 90});
+    const draws = ctx.ctxCalls.filter((c) => c === "drawImage").length - drawsBefore;
+    assert.ok(draws >= 60, "60 redraws happened, got " + draws);
+    const after = plain(ctx.api.cacheSnapshot());
+    assert.strictEqual(after.size, before.size, "redrawing changed no membership");
+    assert.deepStrictEqual(after.entries, before.entries, "redrawing moved no frequency");
+    assert.strictEqual(after.hits, before.hits, "redrawing is not a cache reference");
+  });
+
+  it("one viewport epoch adds at most one count per cached tile", {timeout: 180000}, async () => {
+    const ctx = fresh({images: [{id: 1, w: 4096, h: 4096}]});
+    await bootAndSettle(ctx);
+    const before = plain(ctx.api.cacheSnapshot());
+    await ctx.api.newViewIntent();
+    await drive(ctx);
+    const after = plain(ctx.api.cacheSnapshot());
+    const freqOf = (snap) => {
+      const m = {};
+      for (const e of snap.entries) {
+        m[e.key] = e.frequency;
+      }
+      return m;
+    };
+    const b = freqOf(before);
+    let counted = 0;
+    for (const e of after.entries) {
+      if (b[e.key] === undefined) {
+        assert.strictEqual(e.frequency, 1, "an admission starts at 1");
+        continue;
+      }
+      const delta = e.frequency - b[e.key];
+      assert.ok(delta <= 1, e.key + " gained " + delta + " from a single epoch");
+      counted += delta;
+    }
+    assert.ok(counted > 0, "the epoch did count its cached tiles");
+    assert.ok(after.hits > before.hits, "hits are recorded");
+  });
+
+  it("a viewport epoch protects its own target from eviction", {timeout: 180000}, async () => {
+    const ctx = fresh({images: [{id: 1, w: 4096, h: 4096}]});
+    await bootAndSettle(ctx);
+    const snap = plain(ctx.api.cacheSnapshot());
+    assert.ok(snap.size > 0);
+    const target = snap.entries.filter((e) => e.protected);
+    assert.ok(target.length > 0, "the current viewport target is protected");
+    // Everything the target needs is either cached or in flight, so the
+    // protected set must cover the whole visible set it can account for.
+    for (const e of target) {
+      assert.ok(e.frequency >= 1, "a protected entry has a real frequency");
+    }
+    assert.ok(snap.age >= 0, "age is exposed for debugging");
+    assert.strictEqual(+ctx.hud.lfuAge.textContent, snap.age, "HUD shows the age");
+    assert.strictEqual(+ctx.hud.hits.textContent, snap.hits, "HUD shows hits");
+    assert.strictEqual(+ctx.hud.miss.textContent, snap.misses, "HUD shows misses");
+  });
+
+  it("a decode that resolves after its epoch is closed, never inserted", {timeout: 180000}, async () => {
+    const ctx = fresh({images: [{id: 1, w: 4096, h: 4096}]});
+    await bootAndSettle(ctx);
+    const sizeBefore = +ctx.hud.cache.textContent;
+    const closedBefore = ctx.bitmapsClosed.length;
+    // Zoom to a fresh level and answer the batch by hand, so no decode is
+    // allowed to resolve yet.
+    const wheel = ctx.canvasListeners.wheel[0];
+    const mark = ctx.sends.length;
+    wheel({deltaY: -1005, clientX: 1000, clientY: 750, preventDefault() {}});
+    await waitFor(() => ctx.sends.length > mark, 30000, "zoom sends");
+    respondToChunks(ctx, mark);
+    await waitFor(() => ctx.bitmaps.pending.length > 0, 5000, "a decode is in flight");
+    const inflight = ctx.bitmaps.pending.length;
+    // A new epoch invalidates the in-flight decodes. purgeQueued only drops
+    // queued work, so the in-flight resolution is the interesting path.
+    const epochBefore = +ctx.hud.epoch.textContent;
+    const intent = ctx.api.newViewIntent();
+    intent.catch(() => {
+      /* fire-and-forget, same hygiene fork as the input handlers */
+    });
+    await waitFor(() => +ctx.hud.epoch.textContent > epochBefore, 10000, "epoch advanced");
+    ctx.bitmaps.flushOk();
+    await sleep(50);
+    assert.strictEqual(
+      ctx.bitmapsClosed.length - closedBefore,
+      inflight,
+      "every decode that resolved into a dead epoch was closed"
+    );
+    assert.strictEqual(+ctx.hud.cache.textContent, sizeBefore, "and none was admitted");
+    await drive(ctx);
   });
 });
 

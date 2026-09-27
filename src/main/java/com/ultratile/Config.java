@@ -39,7 +39,7 @@ public final class Config {
     /** Tile edge in pixels. */
     public static final int TILE_SIZE = 512;
 
-    /** LRU cache capacity in tiles. */
+    /** Decoded-bitmap cache capacity in tiles (viewer-local LFUDA policy). */
     public static final int CACHE_CAP = 40;
 
     /** Max concurrent decodes in flight. */

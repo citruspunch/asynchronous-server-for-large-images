@@ -97,6 +97,23 @@ These are the things that break silently.
   never remove `meta.json` or `.ready` from a published image. Reclaiming a
   source costs the ability to re-validate that image against its own header, so
   `verify_pyramid.py` falls back to `meta.json` and says so loudly.
+- **The browser cache is LFUDA-40, and LRU is forbidden here.** The course
+  requires a distinct replacement algorithm per group and another group holds
+  LRU. The policy is Least Frequently Used with Dynamic Aging: a frequency and
+  a priority per entry, a global `age` watermark raised to each victim's
+  priority, and a victim chosen by lowest priority then oldest `insertedSeq`.
+  Three traps in `LfudaCache`:
+  - **Never reintroduce recency.** No recency list, no reordering on read, and
+    never recency as the equal-priority tie-break. `render()` uses `peek()`.
+  - **A frequency is a viewport epoch, not a render.** `markNeeded(key, epoch)`
+    is the only thing that raises a frequency, and it is rate-limited by
+    `lastCountedEpoch`. The browser redraws a cached bitmap hundreds of times
+    per pan; counting those measures the redraw rate, not reuse.
+  - **Protection is eligibility, not frequency.** `protectTarget()` and the
+    `z === 0` pin decide *who may be evicted*; LFUDA decides *who loses*. Never
+    encode viewport relevance into a fake frequency. `MAX_CACHE` stays 40;
+    changing the policy is not a reason to change the capacity, and
+    `Config.CACHE_CAP` must move with it or parity fails.
 - **Shared constants live in four places**: the owning Java file
   (`Config.java` for tuning, `proto/UtpMessages.java` for wire values),
   `web/js/constants.js`, `scripts/import_vips.sh` where applicable, and the

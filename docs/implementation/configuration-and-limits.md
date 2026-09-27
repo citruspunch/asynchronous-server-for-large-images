@@ -105,7 +105,7 @@ to the parity map.
 
 | Name | Value | Owner | Effect |
 | --- | --- | --- | --- |
-| Browser cache size | 40 tiles | viewer `MAX_CACHE` | LRU eviction, closing the bitmap. `z === 0` is pinned against eviction, but not against a fully pinned cache. |
+| Browser cache size | 40 tiles | viewer `MAX_CACHE` | LFUDA eviction, closing the bitmap. The current viewport target and `z === 0` are protected against eviction, but not against a cache that is entirely protected. |
 | Browser decode concurrency | 6 | viewer `MAX_DECODE` | Admission waits for a drain event. |
 | Browser decode queue jobs | 24 | viewer `DECODE_QUEUE_MAX_JOBS` | A received tile goes to `retryNeeded` rather than blocking. |
 | Browser decode queue bytes | 4,194,304 | viewer `DECODE_QUEUE_MAX_BYTES` | Same. Counts queued bytes only, not in-flight. |

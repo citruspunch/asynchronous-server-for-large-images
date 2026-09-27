@@ -7,6 +7,14 @@
 
 Normative spec: [`docs/protocol/UTP-1.0.md`](UTP-1.0.md).
 
+> **After this snapshot.** The browser decoded-bitmap cache was migrated from
+> LRU-40 to **LFUDA-40** (Least Frequently Used with Dynamic Aging) after the
+> run recorded below. The numbers in this file are the LRU-era measurements and
+> are left as the dated record they are; the replacement policy and its own
+> measurements are in
+> [viewer.md](../implementation/viewer.md#the-lfuda-40-decoded-bitmap-cache).
+> `MAX_CACHE` is still 40, so the retained-memory line below is unchanged.
+
 ## Snapshot identity
 
 | Field | Value |

@@ -91,12 +91,26 @@ the change is confined to `net/` and `ws/`, and the protocol does not move.
 
 ## Viewer
 
-### 4K viewport is tight against the cache
+### The 4K cache symptom is gone, for a reason unrelated to the policy
 
-A 3840 x 2160 CSS-pixel viewport at scale 1.0 needs about 40 tiles, which is the
-cache capacity, and the cache also pins the single `z = 0` overview tile. In that
-case one visible tile is evicted and re-fetched. Raising the cap costs browser
-memory linearly, and the fallback is correct but wasteful.
+An earlier version of this file claimed that a 3840 x 2160 CSS-pixel viewport at
+scale 1.0 needs about 40 tiles, which is exactly the cache capacity, so one
+visible tile is evicted and re-fetched. That symptom could not be reproduced on
+the real image-6 ladder under either replacement policy, and the reason is
+`UNION_CAP`, not the cache: `effectiveLOD()` caps the union of visible tiles at
+36, which is below `MAX_CACHE = 40`, so a single viewport can never overflow the
+cache. The largest single-viewport request measured on image-6 was 24 tiles at
+both 1920x1080 and 3840x2160. See
+[viewer.md](viewer.md#why-the-4k-viewport-is-not-actually-tight-any-more).
+
+What is left is a real but different effect: the cache does reach 40 and does
+evict, because a long session accumulates history across viewport epochs, and
+the re-fetch rate on that history is where the replacement policy actually shows
+up. LFUDA re-fetched 30 to 44 % fewer tiles than the previous LRU-40 across
+images 4, 5 and 6, with miss and eviction counts within about 4 % either way.
+
+`MAX_CACHE` was deliberately left at 40. Nothing measured here implicates the
+capacity, so there is no evidence for raising it, and the memory cost is linear.
 
 ### `covCov` is a weak signal
 

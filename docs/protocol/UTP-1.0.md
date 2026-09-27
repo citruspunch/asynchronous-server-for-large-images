@@ -232,7 +232,7 @@ priority) exist nowhere in this path.
                         ▼                    │ (epoch bump + budgeted
  pan/zoom/resize ──▶ deferredIntent ─────────┘  batches; no clear/reset)
 
- needed ─▶ pending ─▶ received/decode-owned ─▶ cached(LRU-40, Z0 pinned)
+ needed ─▶ pending ─▶ received/decode-owned ─▶ cached(LFUDA-40, Z0 pinned)
               │              │ overflow→retryNeeded ─▶ later same-epoch gen
               │              │ reject/format→terminalFailed (epoch)
               └── END unreceived → serverSkippedThisEpoch (epoch, suppressed)

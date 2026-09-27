@@ -53,6 +53,7 @@ async function selectImage(id) {
     return;
   }
   const z0keys = visibleTileRange(0);
+  cache.protectTarget(z0keys);
   const z0batch = await sendGeneration(currentImage, 0, z0keys, myEpoch);
   await drainBatch(z0batch, myEpoch);
   const {effective} = effectiveLOD(selectLevel(camS));
@@ -297,7 +298,7 @@ globalThis.UltraTile = {
   effectiveLOD,
   splitIntoBatches,
   DecodePipeline,
-  LruCache,
+  LfudaCache,
   epochToken,
   BatchState,
   classify,
@@ -307,5 +308,6 @@ globalThis.UltraTile = {
   decodeRefs,
   netCov,
   covCov,
-  switchState
+  switchState,
+  cacheSnapshot
 };

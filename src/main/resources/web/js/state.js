@@ -25,7 +25,7 @@ let retryNeeded = new Set();
 let terminalFailed = new Set();
 let receivedThisEpoch = new Set();
 let serverSkippedThisEpoch = new Set();
-let cache = new LruCache();
+let cache = new LfudaCache();
 let decodePipeline = new DecodePipeline();
 let avgTileBytes = AVG_TILE_SEED;
 let tileSamples = 0;
@@ -126,5 +126,30 @@ function switchState() {
     imageSwitchSeq,
     pendingSwitch: pendingSwitch ? {seq: pendingSwitch.seq, id: pendingSwitch.id} : null,
     deferredIntent
+  };
+}
+
+// ---- test/debug seam: plain cache snapshot, never read by control flow ----
+function cacheSnapshot() {
+  const entries = [];
+  for (const [key, e] of cache.map) {
+    entries.push({
+      key,
+      bytes: e.bytes,
+      frequency: e.frequency,
+      priority: e.priority,
+      insertedSeq: e.insertedSeq,
+      lastCountedEpoch: e.lastCountedEpoch,
+      protected: cache.isProtected(key)
+    });
+  }
+  return {
+    size: cache.size,
+    capacity: cache.capacity,
+    age: cache.age,
+    hits: cache.hits,
+    misses: cache.misses,
+    evicts: cache.evicts,
+    entries
   };
 }

@@ -161,10 +161,12 @@ and it is capped at 40 entries:
 40 tiles x 512 x 512 px x 4 B (RGBA-equivalent) = 41,943,040 B = 40 MiB
 ```
 
-plus per-bitmap overhead the browser adds, plus the GPU copy. Zoom-0 tiles are
-pinned against eviction, so the effective floor is a few MiB above zero. This is
-the number that stays flat no matter how large the image is, which is the entire
-point of the tiling design.
+plus per-bitmap overhead the browser adds, plus the GPU copy. The current viewport
+target and the `z = 0` overview tile are protected against eviction, so the
+effective floor is a few MiB above zero. This is the number that stays flat no
+matter how large the image is, which is the entire point of the tiling design.
+The replacement policy is LFUDA; see [viewer.md](viewer.md) for why the choice
+of policy does not change this figure.
 
 ### 3. Browser transient compressed bytes
 

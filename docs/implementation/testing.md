@@ -117,7 +117,7 @@ the mechanism keeping tile naming single-sourced.
 
 ## The viewer suite
 
-`node scripts/test_viewer.cjs`, 42 tests, roughly three minutes, zero
+`node scripts/test_viewer.cjs`, 63 tests, roughly three minutes, zero
 dependencies. It concatenates the ten viewer modules into one `node:vm` script so
 the shared lexical scope behaves as deferred script tags make it behave in a
 browser, then tests against that.
@@ -126,9 +126,34 @@ Covered: golden wire vectors, the 4002 close discipline, allocator exhaustion an
 reconnect, single-owner image switching, the A-B-A and late-A races, resize during
 fetch, empty registry, stale versus valid FORMAT=2, stale END and stale TILE
 discards, `netCov` versus `covCov`, `BatchState` reclamation, terminal and skipped
-keys becoming requestable next epoch, LRU eviction under a serpentine sweep, zoom
-out raising `rxBytes` and recording `effZ`, headroom gating, and `clearRect`
-running before any tile draw.
+keys becoming requestable next epoch, LFUDA eviction under a serpentine sweep, zoom
+out raising `rxBytes` and recording `effZ`, headroom gating, `clearRect` running
+before any tile draw, and `a single viewport can never ask for more than
+UNION_CAP tiles`, which is the structural invariant that stops one viewport from
+overflowing a 40-entry cache.
+
+The 20 tests under `lfuda cache` and `lfuda integration` are the cache-policy
+vectors. The unit half runs against the exported `LfudaCache` directly, so every
+assertion is a function of the trace and nothing else: insertion at
+`frequency 1` / `priority age + 1`; lowest-frequency eviction; dynamic aging
+retiring popularity naive LFU would keep; one count per viewport epoch with 200
+reads in between counting zero times; same-epoch duplicates from several internal
+paths counting once; a protected current target outliving a lower-priority
+unprotected tile; `z = 0` pinning through the first two fallback tiers and losing
+in a fully pinned cache; a needed tile never being its own victim; equal
+priorities broken by older admission with the recency order deliberately
+reversed between two otherwise identical runs; a reference trace where LFUDA and
+LRU pick different victims; capacity 40 never exceeded under 120 protected
+inserts; exactly-once close on eviction, on `clear()`, and on key replacement;
+and 10^6 epochs leaving every counter exactly representable. The integration half
+covers the wiring: 60 redraws move no frequency at all, one epoch adds at most one
+count per tile, the HUD reports `hits`/`miss`/`lfuAge`, and a decode that resolves
+into a dead epoch is closed rather than admitted.
+
+`is not least-recently-used: LFUDA and LRU pick different victims` is the one to
+read first. It replays one reference trace, works out the LRU victim by hand from
+the trace, asserts it is `A`, asserts the LFUDA victim is `C`, and asserts they
+differ.
 
 Two of the slow tests are the interesting ones:
 `tiny-tile streaks plan against the floor` and `mean governs once avgTileBytes

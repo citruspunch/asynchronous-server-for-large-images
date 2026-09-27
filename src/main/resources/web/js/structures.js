@@ -1,6 +1,6 @@
 /* UltraTile offline viewer: structures (2/10).
  * Ownership primitives with no module-state dependencies: request-id
- * allocator closure, LRU tile cache, bounded decode pipeline.
+ * allocator closure, LFUDA tile cache, bounded decode pipeline.
  */
 
 // ---- request-id allocator: closure-private counter, explicit results ----
@@ -18,17 +18,41 @@ function createReqAllocator(startReqId) {
   };
 }
 
-// ---- LRU tile cache: capacity 40, zoom-0 pinned, close-on-evict ----
-class LruCache {
+// ---- LFUDA tile cache: Least Frequently Used with Dynamic Aging ----
+//
+// LFUDA is the LRFU-family replacement policy that subsumes plain LFU: every
+// entry carries a frequency and a priority, and the global `age` watermark is
+// raised to the priority of each victim, so popularity earned long ago loses
+// influence as the cache keeps evolving. Selection is a min over
+// (priority, insertedSeq) and nothing else.
+//
+// Access recency is never stored, never ordered, and never consulted: there is
+// deliberately no recency list in this file, and the insertion-ordered Map is
+// admission order, not recency order. `markNeeded()` never reorders anything.
+//
+// Two concerns are kept deliberately apart:
+//   viewport policy (the protection sets) -> which keys MAY be evicted
+//   LFUDA (frequency, priority, age)      -> which eligible key DOES lose
+//
+// A frequency is one viewport epoch, not one render: see markNeeded().
+// The scan is O(size) over at most MAX_CACHE entries; no heap, no tree.
+class LfudaCache {
   constructor(capacity, onEvict) {
     this.capacity = (capacity === undefined) ? MAX_CACHE : capacity;
     this.onEvict = onEvict || null;
+    // key -> entry. Map order is admission order and therefore insertedSeq
+    // order. It is not recency, and selection never walks it for ordering.
     this.map = new Map();
-    this.pinned = new Set();
+    this.pinned = new Set();  // z === 0 overview: protected for the session
+    this.target = new Set();  // current epoch's viewport target, replaced whole
+    this.age = 0;             // LFUDA aging watermark, starts at 0
+    this.seq = 0;             // monotonic admission counter, never reset
     this.evicts = 0;
+    this.hits = 0;
+    this.misses = 0;
   }
-  static closeValue(v) {
-    const bmp = (v && typeof v.close === "function") ? v : (v && v.bitmap);
+  static closeEntry(entry) {
+    const bmp = entry && entry.bitmap;
     if (bmp && typeof bmp.close === "function") {
       try {
         bmp.close();
@@ -37,65 +61,138 @@ class LruCache {
       }
     }
   }
+  // Strictly "lower LFUDA priority, then older admission". Recency is absent
+  // from this comparison on purpose, so equal priorities are decided by
+  // insertion sequence alone.
+  static lower(e, best) {
+    if (e.priority !== best.priority) {
+      return e.priority < best.priority;
+    }
+    return e.insertedSeq < best.insertedSeq;
+  }
   get size() {
     return this.map.size;
+  }
+  // Viewport policy: a protected key is not an eviction candidate while any
+  // unprotected candidate exists.
+  isProtected(key) {
+    return this.pinned.has(key) || this.target.has(key);
+  }
+  protectTarget(keys) {
+    this.target = new Set(keys);
+  }
+  clearTarget() {
+    this.target = new Set();
   }
   has(key) {
     return this.map.has(key);
   }
-  get(key) {
-    const v = this.map.get(key);
-    if (v !== undefined) {
-      this.map.delete(key);
-      this.map.set(key, v);
-    }
-    return v;
+  // Non-accounting read. Drawing goes through this, so rendering can never
+  // move a frequency.
+  peek(key) {
+    return this.map.get(key);
   }
-  set(key, value, opts) {
-    const pin = !!(opts && opts.pin);
-    if (this.map.has(key)) {
-      this.map.delete(key);
+  // One meaningful reference: this cached tile satisfies the need of a new
+  // viewport epoch. Repeated calls inside the same epoch, from any number of
+  // internal paths, count once. Returns whether the tile was cached, which
+  // makes the hit/miss counters the natural product of the same call.
+  markNeeded(key, epoch) {
+    const e = this.map.get(key);
+    if (e === undefined) {
+      this.misses += 1;
+      return false;
     }
-    this.map.set(key, value);
-    if (pin) {
+    this.hits += 1;
+    if (e.lastCountedEpoch === epoch) {
+      return true;
+    }
+    e.lastCountedEpoch = epoch;
+    e.frequency += 1;
+    e.priority = this.age + e.frequency;
+    return true;
+  }
+  // Admit a freshly decoded bitmap. frequency starts at 1 and the admission
+  // itself is that epoch's first reference, so the tile is not counted twice.
+  insert(key, bitmap, opts) {
+    opts = opts || {};
+    const prev = this.map.get(key);
+    if (prev !== undefined) {
+      this.map.delete(key);
+      LfudaCache.closeEntry(prev);
+    }
+    const entry = {
+      bitmap,
+      bytes: (opts.bytes === undefined) ? 0 : opts.bytes,
+      frequency: 1,
+      priority: this.age + 1,
+      insertedSeq: ++this.seq,
+      lastCountedEpoch: (opts.epoch === undefined) ? -1 : opts.epoch
+    };
+    this.map.set(key, entry);
+    if (opts.pin) {
       this.pinned.add(key);
     }
-    while (this.map.size > this.capacity) {
-      let victim = null;
-      for (const k of this.map.keys()) {
-        if (!this.pinned.has(k)) {
-          victim = k;
-          break;
+    this.evictDown(key);
+    return entry;
+  }
+  // Bounded three-tier fallback, all three tiers using the same LFUDA order.
+  // Tier 1 is the normal path: unprotected keys only. Tier 2 is the case where
+  // the viewport target has filled the cache, so target protection yields and
+  // z === 0 pinning still holds. Tier 3 is the fully pinned cache. Every tier
+  // excludes `admitted`, so a cache can always admit what it just admitted and
+  // a needed tile can never be its own permanent victim.
+  selectVictim(admitted) {
+    const tiers = [
+      (k) => k !== admitted && !this.pinned.has(k) && !this.target.has(k),
+      (k) => k !== admitted && !this.pinned.has(k),
+      (k) => k !== admitted
+    ];
+    for (const eligible of tiers) {
+      let best = null;
+      for (const [k, e] of this.map) {
+        if (eligible(k) && (best === null || LfudaCache.lower(e, best.e))) {
+          best = {k, e};
         }
       }
-      if (victim === null) {
-        victim = this.map.keys().next().value;
+      if (best !== null) {
+        return best;
       }
-      const old = this.map.get(victim);
-      this.map.delete(victim);
-      this.pinned.delete(victim);
+    }
+    const only = this.map.get(admitted);
+    return only === undefined ? null : {k: admitted, e: only};
+  }
+  evictDown(admitted) {
+    while (this.map.size > this.capacity) {
+      const v = this.selectVictim(admitted);
+      if (v === null) {
+        break;
+      }
+      this.age = v.e.priority;  // dynamic aging: the floor rises to the victim
+      this.map.delete(v.k);
+      this.pinned.delete(v.k);
+      this.target.delete(v.k);
       this.evicts += 1;
-      LruCache.closeValue(old);
+      LfudaCache.closeEntry(v.e);
       if (this.onEvict) {
         try {
-          this.onEvict(victim, old);
+          this.onEvict(v.k, v.e);
         } catch (e) {
           /* ignore */
         }
       }
     }
-    return value;
-  }
-  delete(key) {
-    this.pinned.delete(key);
-    return this.map.delete(key);
   }
   clear() {
-    for (const [, v] of this.map) {
-      LruCache.closeValue(v);
+    for (const [, e] of this.map) {
+      LfudaCache.closeEntry(e);
     }
     this.map.clear();
     this.pinned.clear();
+    this.target.clear();
+    // age is a watermark over what the cache has held, and the cache now holds
+    // nothing, so it restarts. evicts/hits/misses are deliberately NOT reset:
+    // the HUD and the tests read them across an image switch.
+    this.age = 0;
   }
   keys() {
     return [...this.map.keys()];

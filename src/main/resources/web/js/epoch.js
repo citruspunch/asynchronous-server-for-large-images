@@ -43,6 +43,10 @@ function newViewEpoch() {
   terminalFailed.clear();
   serverSkippedThisEpoch.clear();
   receivedThisEpoch.clear();
+  // The previous epoch's target no longer describes what the viewport needs.
+  // Dropping it here means an epoch that never reaches runViewportBatches()
+  // over-protects nothing, which is the safe direction.
+  cache.clearTarget();
   decodePipeline.purgeQueued((item) => item.epoch !== cur);
   updateHud();
   return cur;
@@ -58,8 +62,7 @@ function maybeReclaim(batch) {
 function onDecodeResolved(item, bmp) {
   decodeCount += 1;
   if (item.epoch === viewEpoch) {
-    const pin = item.z === 0;
-    cache.set(item.key, {bitmap: bmp, bytes: item.len}, {pin});
+    cache.insert(item.key, bmp, {bytes: item.len, pin: item.z === 0, epoch: item.epoch});
     decodedBytes += item.len;
     const b = batches.get(item.reqId);
     if (b) {

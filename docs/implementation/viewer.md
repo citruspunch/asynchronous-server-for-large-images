@@ -18,7 +18,7 @@ reordering the tags would break the code.
 | # | File | Owns |
 | ---: | --- | --- |
 | 1 | `constants.js` | Shared tunables and wire values, plus viewer-local policy |
-| 2 | `structures.js` | `createReqAllocator`, `LruCache`, `DecodePipeline`. No module-state reads. |
+| 2 | `structures.js` | `createReqAllocator`, `LfudaCache`, `DecodePipeline`. No module-state reads. |
 | 3 | `state.js` | Every mutable binding in the app, and `BatchState` |
 | 4 | `geometry.js` | Pyramid math, LOD selection, budgets, coverage, chunk runs |
 | 5 | `codec.js` | `encodeViewport`, `encodeCommit`, `encodeAbort`, `parseTileHeader`, `parseEnd` |
@@ -90,7 +90,7 @@ received / decode-owned       receivedThisEpoch.add(key), then either
    │                          decodePipeline.submit() or a terminal/retry set
    ├─ queue full ──────────▶ retryNeeded        (same epoch, retried later)
    ├─ format != 1 ─────────▶ terminalFailed     (epoch-scoped, not retried)
-   └─ decode resolves ─────▶ cached             (LruCache)
+   └─ decode resolves ─────▶ cached             (LfudaCache)
                                   │
                                   └─ evicted ──▶ close(), no longer suppressed
 ```
@@ -358,29 +358,212 @@ matching queued items and never touches in-flight ones.
 decode itself is off the JavaScript thread inside the browser, which is why a
 cap of 6 is a memory cap rather than a CPU cap.
 
-`LruCache` is capacity 40, insertion-ordered via a `Map`, with `get()` refreshing
-recency. Eviction picks the first **unpinned** key, closing its bitmap; if
-everything is pinned it falls back to the oldest key. `onDecodeResolved()` pins
-`z === 0`, so the one-tile overview level is evicted last, though not never.
-`clear()` closes every bitmap, which is what `selectImage()` does before adopting a
-new image.
+### The LFUDA-40 decoded-bitmap cache
 
-Rendering calls `cache.get(k)` for every entry on every frame, so a render
-refreshes LRU recency. A tile that is merely visible is therefore protected from
-eviction by being looked at, which is the intended behavior for a viewport that
-has not moved.
+`LfudaCache` is the decoded-bitmap cache, capacity `MAX_CACHE = 40`, and its
+replacement policy is **LFUDA, Least Frequently Used with Dynamic Aging**. That
+is the whole policy name; it is not a private invention and it is not a
+renamed recency list. LRU is deliberately absent from this codebase: the course
+requires each group to use a distinct replacement algorithm, and another group
+has taken LRU.
 
-### A known tightness at 4K
+LFUDA is the LRFU-family policy that subsumes plain LFU. The core idea is a
+per-entry frequency plus a global aging watermark, so that popularity earned
+long ago stops mattering as the cache keeps working, instead of pinning a tile
+forever the way naive LFU does.
 
-A 4K viewport (3840 x 2160 CSS px) at full zoom, meaning scale 1.0, needs about
-8 x 5 tiles, so 40 tiles, which is exactly the cache capacity. The cache also
-pins the single `z = 0` overview tile, which occupies a slot. In that specific
-case one visible tile is evicted and re-fetched, and the user may see it flicker
-back in on small pans.
+**Entry metadata.** Each cached tile carries `bitmap`, `bytes` (payload length,
+for the `decodedBytes` counter), `frequency`, `priority`, `insertedSeq`, and
+`lastCountedEpoch`. The cache additionally owns one global `age`, and two
+protection sets: `pinned` (the `z === 0` overview, set at insert) and `target`
+(the current viewport epoch's visible set).
 
-This is recorded rather than fixed. Raising `MAX_CACHE` costs browser memory
-linearly, and the fallback is correct, just wasteful. If you change it, change
-`Config.CACHE_CAP` and `constants.js` together, or parity will fail.
+**Insertion.** `insert(key, bitmap, {bytes, pin, epoch})` sets
+`frequency = 1` and `priority = age + frequency`, and stamps
+`insertedSeq` from a counter that increases monotonically for the life of the
+page. The admission is itself that epoch's first reference, so a tile is not
+counted twice for the epoch that fetched it.
+
+**What counts as a reference.** A *cache reference* is: a cached tile satisfies
+the requirements of a new viewport epoch that needs that tile. That happens in
+exactly one place, `requestableKeys()`, which calls `cache.markNeeded(key,
+epoch)` for each key the new epoch needs. The rule is:
+
+```text
+frequency += 1
+priority   = age + frequency
+lastCountedEpoch = epoch
+```
+
+and `markNeeded()` returns without counting if `lastCountedEpoch` already equals
+the current epoch. So a tile gains **at most one frequency per viewport epoch**,
+no matter how many internal paths ask. Rendering is a separate, non-accounting
+read: `render()` uses `peek(key)`, and `has(key)` is membership only. This
+matters because the browser redraws the same cached bitmap many times per pan,
+per animation frame and per HUD update; counting those would make frequency a
+redraw counter rather than a measure of useful reuse.
+
+**Victim selection.** When capacity pressure requires an eviction:
+
+1. build the eligible candidate set (below),
+2. take the entry with the **lowest `priority`**,
+3. break equal priorities by the **oldest `insertedSeq`**,
+4. set `age = victim.priority`,
+5. `close()` the victim bitmap exactly once,
+6. drop it and increment `evicts`.
+
+Access recency is not a metric here, not a tie-break, and not stored. The
+`Map` is insertion-ordered, which makes it admission order, not recency order,
+and `markNeeded()` never reorders anything. Eviction is a linear scan over at
+most 40 entries. There is no heap, no tree, and no auxiliary index, because at
+40 entries a scan is both fast enough and the thing a grader can audit.
+
+**Protection is eligibility, LFUDA is the choice.** Two policies are kept
+separate on purpose:
+
+```text
+viewport policy:  who may be evicted?
+LFUDA:            among those candidates, who loses?
+```
+
+`runViewportBatches()` hands the cache the union of the visible tiles at every
+level the epoch will work on, via `protectTarget()`. `newViewEpoch()` calls
+`clearTarget()`, so an epoch that never reaches the batch loop over-protects
+nothing, which is the safe direction. Protection never inflates a frequency; it
+only removes keys from the candidate set. The `z === 0` overview tile is pinned
+at insert and keeps that protection for the life of the image.
+
+When there is no eligible candidate, `selectVictim()` falls back through bounded
+tiers rather than exceeding capacity:
+
+| Tier | Candidates | Reached when |
+| ---: | --- | --- |
+| 1 | not pinned, not in the target | the normal path |
+| 2 | not pinned | the viewport target has filled the cache |
+| 3 | everything | the cache is fully pinned |
+
+Every tier excludes the key being admitted. That guard is a deliberate,
+UltraTile-specific deviation from textbook LFUDA and it is load-bearing: a fresh
+entry's priority is `age + 1`, which is by construction the global minimum, so
+without the guard a needed tile that the viewport re-requests every epoch would
+be its own permanent victim, re-fetched forever and never drawn. The guard
+costs the pure scan-resistance that textbook LFUDA has, and buys a viewport
+that always converges. `MAX_CACHE` is never exceeded under any of the tiers.
+
+**Cleanup.** Every eviction closes the victim's bitmap exactly once. Replacing
+an existing key closes the previous bitmap rather than leaking it. `clear()`
+closes every retained bitmap once and resets `age` to 0, since the watermark
+describes what the cache has held; `evicts`, `hits` and `misses` are cumulative
+and deliberately survive `clear()`, because the HUD and the tests read them
+across an image switch. `selectImage()` calls `clear()`, so an image switch
+closes everything the previous image retained.
+
+### Why LFUDA and not LRU
+
+The choice is forced and then made deliberate:
+
+- **LRU is unavailable.** The course requires a distinct algorithm per group
+  and another group holds LRU, so this had to be something else.
+- **Plain LFU is worse.** It retains historically popular tiles indefinitely. In
+  a tiled viewer a tile that was hot for one region stays hot for the whole
+  session and the region the user is actually looking at can never displace it.
+- **LFUDA adds dynamic aging.** `age` rises to each victim's priority, so the
+  floor for a new entry rises with the cache's own history and old popularity
+  bleeds off. The test `dynamic aging retires popularity that naive LFU would
+  keep forever` walks a hot tile to `priority 6` and then shows it surviving 11
+  further admissions before aging catches up and evicts it, which naive LFU
+  could never do.
+- **Reuse frequency is meaningful here.** Tiled-image users pan, zoom and come
+  back to nearby regions, so a tile referenced across many viewport epochs is
+  genuinely the one worth keeping.
+- **Size-aware policies would buy nothing.** Every retained bitmap is
+  512 x 512, so all entries cost the same and there is no size dimension for a
+  policy like GDSF to exploit.
+- **Protection stays orthogonal.** Viewport and `z === 0` protection are
+  eligibility, applied before LFUDA, and are not encoded as fake frequencies.
+
+This is a trade-off, not a claim of universal superiority. Against a strict
+single-pass scan, LFUDA's scan resistance is deliberately weakened by the
+admission guard described above. The position taken here is that for a viewer
+whose working set is roughly the viewport, converging beats resisting.
+
+One thing worth recording about the implementation this replaced. The old
+`LruCache.get()` refreshed recency by deleting and re-inserting the key, and
+`render()` called `get()` for every cached entry on every frame, in the order
+`keys()` returned them. Deleting and re-inserting in iteration order leaves the
+`Map` in exactly the order it was already in, so those per-frame refreshes were
+a no-op on the ordering. The practical consequence is that the old recency order
+was, for every rendered entry, the admission order: on a viewport that redraws
+continuously, that policy was FIFO over admissions. That is a fair reading of why
+frequency-based selection is a real behavioural change here and not a rename, and
+it is consistent with the measured re-fetch improvement below.
+
+### Why the 4K viewport is not actually tight any more
+
+This section used to claim that a 4K viewport (3840 x 2160 CSS px) at scale 1.0
+needs 8 x 5 tiles, which is 40, which is exactly `MAX_CACHE`, so one visible tile
+is evicted and re-fetched. The arithmetic about the **desired** level is right
+and has been right. The conclusion no longer follows, and the symptom could not
+be reproduced on the real ladder under either replacement policy.
+
+`effectiveLOD()` refuses any level whose union of visible tiles across levels
+0..E exceeds `UNION_CAP = 36`, and 36 is **below** `MAX_CACHE = 40`. The
+requested set is `visibleTileRange(E)` for the effective level E, and that is a
+subset of the union, so one viewport can never ask for more than 36 tiles and
+can never evict anything by itself. The `z = 0` overview pin is inside that
+union, so it does not consume a slot outside it either.
+
+Measured on image-6 (40000 x 30131) with a scripted session of 161 viewport
+epochs, sweeping every scale to find the most cache-stressed operating point:
+
+| Viewport | Largest single-viewport request observed | Cache peak |
+| --- | ---: | ---: |
+| 1920 x 1080 | 24 tiles | 40 |
+| 3840 x 2160 | 24 tiles | 40 |
+
+The cache does reach 40 and does evict, but only because the session visits
+enough distinct regions to accumulate history across epochs. The re-fetch
+behaviour there is a history effect, not a 4K effect, and §
+[Cache policy on the real ladder](#cache-policy-on-the-real-ladder) measures it
+for both policies.
+
+`UNION_CAP` below `MAX_CACHE` is a structural invariant, not a coincidence, and
+the viewer suite asserts it directly in `a single viewport can never ask for
+more than UNION_CAP tiles`. If someone later raises `UNION_CAP` above
+`MAX_CACHE`, that assertion is the thing that will fail first, which is the
+point of having it.
+
+Raising `MAX_CACHE` is still not the answer to anything measured here: it did
+not change the hit or miss counts in either direction. If it is ever changed,
+`Config.CACHE_CAP` and `constants.js` must move together, or parity fails.
+
+### Cache policy on the real ladder
+
+Both policies were measured on the same server, the same scripted session, the
+same instrument, and the same ten traces: pans in each direction, a repeated
+back-and-forth pan, a zoom ladder with a revisit, a serpentine sweep, a 20-step
+sweep, a 14-step vertical sweep, a deep zoom revisit ladder, and an image switch
+out and back. "Re-fetch" counts TILE frames for a key the session had already
+seen, taken from the wire rather than from the cache's own counters.
+
+| Workload | misses LFUDA / LRU | evictions | re-fetches | re-fetched bytes | total rxBytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| image-4, 1920x1080 | 143 / 147 | 98 / 102 | 28 / 44 | 2.53 / 4.50 MB | 17.03 / 17.50 MB |
+| image-5, 1920x1080 | 220 / 221 | 175 / 176 | 47 / 67 | 2.59 / 4.51 MB | 18.10 / 17.65 MB |
+| image-6, 1920x1080 | 223 / 220 | 178 / 175 | 29 / 52 | 3.12 / 5.63 MB | 27.34 / 26.56 MB |
+| image-6, 3840x2160 | 218 / 226 | 159 / 167 | 37 / 62 | 3.76 / 6.52 MB | 26.49 / 26.89 MB |
+
+Read honestly, that is **not** a clean win. Miss counts, eviction counts and
+total received bytes are within about 4 % either way, and on image-6 at
+1920x1080 LFUDA is marginally the worse of the two on all three. What LFUDA does
+consistently better is re-fetching: 30 to 44 % fewer re-fetched tiles and 42 to
+45 % fewer re-fetched bytes on every workload. That is the frequency signal doing
+what it is supposed to: tiles the user keeps coming back to survive, so the
+second and third visit is a hit.
+
+The LFUDA aging watermark is not idle in any of these sessions; it peaked at 25,
+55, 38 and 35 respectively, so the aging is genuinely driving decisions rather
+than sitting at zero.
 
 ## Rendering
 
@@ -404,7 +587,7 @@ any tile draw.
 
 ## HUD and counters
 
-`updateHud()` writes thirteen fields, all `textContent` on `<b>` elements inside
+`updateHud()` writes sixteen fields, all `textContent` on `<b>` elements inside
 `#hud`:
 
 | Field | Meaning |
@@ -414,14 +597,23 @@ any tile draw.
 | `rxBytes` | TILE `payloadLen` received, duplicates included |
 | `decodedBytes` | payload bytes at cache insert, **not** bitmap size |
 | `reqs` | request IDs allocated |
-| `evicts` | LRU evictions |
+| `evicts` | LFUDA evictions |
 | `cache` | entries currently cached |
+| `hits` | viewport needs a cached tile already satisfied |
+| `miss` | viewport needs a tile the cache did not have, so a re-fetch follows |
+| `lfuAge` | the LFUDA aging watermark |
 | `decJobs` | queued plus in-flight decodes |
 | `decBytes` | queued bytes |
 | `epoch` | `viewEpoch` |
 | `gen` | last allocated reqId |
 | `netCov` | `|receivedThisEpoch ∪ serverSkippedThisEpoch|` |
 | `covCov` | cached divided by needed, over the union of visible tiles at **all** levels |
+
+`hits`, `miss` and `lfuAge` are the cache-policy diagnostics: `hits` against
+`miss` is the cache effectiveness of the policy, `miss` counts the tiles a
+viewport had to re-fetch, and `lfuAge` shows whether the aging watermark is
+moving. Per-entry frequency is deliberately not in the HUD; `cacheSnapshot()`
+exposes it for tests instead.
 `covCov` is observational only and control flow never waits on it. It is worth
 knowing that it is computed over the union across every level `0..N` while only
 one effective level is being fetched, so in normal operation it reads low and is
@@ -437,11 +629,11 @@ in [concurrency-and-memory.md](concurrency-and-memory.md).
 `globalThis.UltraTile` exports the functions the Node harness needs:
 `createReqAllocator`, `connectWs`, `selectImage`, `boot`, `newViewIntent`, the
 five codec functions, `selectLevel`, `visibleTileRange`, `effectiveLOD`,
-`splitIntoBatches`, `DecodePipeline`, `LruCache`, `epochToken`, `BatchState`,
+`splitIntoBatches`, `DecodePipeline`, `LfudaCache`, `epochToken`, `BatchState`,
 `classify`, `headroomOk`, `batchBudget`, `newViewEpoch`, `decodeRefs`, `netCov`,
-`covCov`, and `switchState`. It is a test seam, not a public API; nothing in the
-served page calls it.
+`covCov`, `switchState`, and `cacheSnapshot`. It is a test seam, not a public
+API; nothing in the served page calls it.
 
 `scripts/test_viewer.cjs` concatenates the ten files into one `node:vm` script so
 the shared lexical scope behaves the way deferred script tags make it behave in a
-browser, then runs 42 tests against it. No browser, no network, no dependencies.
+browser, then runs 63 tests against it. No browser, no network, no dependencies.

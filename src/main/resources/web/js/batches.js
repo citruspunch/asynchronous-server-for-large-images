@@ -38,11 +38,17 @@ function waitHeadroom(epoch) {
   });
 }
 
-function requestableKeys(needed) {
+function requestableKeys(needed, epoch) {
   const out = [];
   for (const key of needed) {
     const p = parseKey(key);
-    if (cache.has(key)) {
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+      continue;
+    }
+    // A cached tile that this new epoch needs is exactly one LFUDA reference.
+    // markNeeded() is the only path that raises a frequency, and the epoch
+    // guard inside it makes every other call in this epoch a no-op.
+    if (cache.markNeeded(key, epoch)) {
       continue;
     }
     if (pending.has(key)) {
@@ -55,9 +61,6 @@ function requestableKeys(needed) {
       continue;
     }
     if (serverSkippedThisEpoch.has(key)) {
-      continue;
-    }
-    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
       continue;
     }
     out.push(key);
@@ -139,11 +142,21 @@ async function runViewportBatches(info, epoch, zs) {
     return;
   }
   const levels = zs || [effectiveLOD(selectLevel(camS)).effective];
+  // Viewport policy, stated once for the whole epoch intent: the union of the
+  // visible tiles at every level this epoch will work on. It decides only
+  // eligibility; LFUDA still decides which eligible tile loses.
+  const target = [];
+  for (const z of levels) {
+    for (const k of visibleTileRange(z)) {
+      target.push(k);
+    }
+  }
+  cache.protectTarget(target);
   for (const z of levels) {
     if (!epochAlive(epoch)) {
       return;
     }
-    const needed = requestableKeys(visibleTileRange(z));
+    const needed = requestableKeys(visibleTileRange(z), epoch);
     if (!needed.length) {
       continue;
     }

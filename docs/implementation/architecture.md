@@ -86,7 +86,7 @@ The browser, as served:
 ```text
 index.html
  ├── <script defer> constants.js     shared tunables and wire values
- ├── <script defer> structures.js    reqId allocator, LruCache, DecodePipeline
+ ├── <script defer> structures.js    reqId allocator, LfudaCache, DecodePipeline
  ├── <script defer> state.js         every mutable binding, in one place
  ├── <script defer> geometry.js      pyramid math, LOD, budgets, coverage
  ├── <script defer> codec.js         big-endian encode and validated parse
@@ -178,8 +178,9 @@ assignment's "images must not be served whole" requirement expressed as a
 missing route rather than as a policy check.
 
 There is no server-side tile cache. `Config.CACHE_CAP` exists but is never read
-by the server. Every request re-reads from disk, which is why server memory does
-not grow with the number of distinct tiles served.
+by the server. It is the parity anchor for the browser's `MAX_CACHE`. Every
+request re-reads from disk, which is why server memory does not grow with the
+number of distinct tiles served.
 
 There is no authentication, no TLS, and no per-client quota. The bind default is
 loopback, and `--bind 0.0.0.0` is an explicit opt-in to a trusted LAN.
