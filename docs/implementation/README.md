@@ -13,26 +13,29 @@ requested tile straight from disk into a WebSocket frame without buffering it in
 a large byte array. The viewer decodes a bounded number of tiles at a time and
 disposes the rest.
 
-## The three documentation layers
+## The two documentation layers
 
 ```text
-docs/plans/            design history. What was intended, in what order,
-                       which alternatives were rejected, and why.
-                       Superseded assumptions stay here on purpose.
-
 docs/protocol/         normative. UTP-1.0.md is the single authority for
                        anything visible on the wire or to a peer.
                        E2E-REPORT.md records one validation run.
 
 docs/implementation/   as-built. Where the code lives, how the pieces fit,
-                       what the current constants are, and which invariants a
-                       future change must not break.
+                       what the current constants are, which invariants a
+                       future change must not break, and why a decision was
+                       taken when the reasoning is not obvious from the code.
 ```
 
 The distinction matters when you are looking for a fact. Wire behavior comes from
-`docs/protocol/UTP-1.0.md`. Design rationale comes from `docs/plans/`. Current
-structure and current constants come from this directory. If an implementation
-document and the code disagree, the code is correct and this document is stale.
+`docs/protocol/UTP-1.0.md`. Everything else comes from this directory. If an
+implementation document and the code disagree, the code is correct and this
+document is stale.
+
+There is no third layer. Design history used to live in `docs/plans/`; it was
+deleted because a superseded plan still naming a constant or a test count is a
+second source of truth waiting to be wrong. Rationale is therefore kept here, as
+prose next to the thing it explains, and updated in the same change that moves
+the behavior.
 
 Nothing in this directory restates UTP semantics in full. Where a UTP rule is
 needed to explain the implementation, it is summarized and linked to
@@ -160,8 +163,6 @@ inside UTP frames.
 - [`src/main/java/com/ultratile/proto/UTP_SPEC.md`](../../src/main/java/com/ultratile/proto/UTP_SPEC.md).
   A non-normative pointer to the spec plus a golden packet-offset table, kept next
   to the codec.
-- [`docs/plans/feature-ultratile-system/`](../plans/feature-ultratile-system/overview.md).
-  Design history. Useful for the reasoning, not for the current state.
 - [`project_instructions.md`](../../project_instructions.md). The original
   assignment statement (Spanish).
 - [`AGENTS.md`](../../AGENTS.md). Repository conventions and the traps that break

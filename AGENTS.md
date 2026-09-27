@@ -54,7 +54,6 @@ to its owner instead.
 | Unresolved constraints | `docs/implementation/known-limitations.md` |
 | How to run things | `docs/implementation/operations.md` |
 | Evaluator-image procedure and tiers | `docs/grading-preflight.md` |
-| Historical reasoning | `docs/plans/` (deliberately superseded) |
 
 ## Read before editing
 
@@ -159,5 +158,12 @@ These are the things that break silently.
 - Run `./build.sh`.
 - Update the owning document in `docs/implementation/` when behavior changed.
   Do not update `docs/protocol/UTP-1.0.md` unless normative behavior changed.
-- Do not edit `docs/plans/` to make it look current. It is history.
+- **There is exactly one source of truth per fact, and design history is not
+  kept.** `docs/plans/` was deleted on purpose: a superseded plan that still
+  names a constant, a class or a test count is a second source of truth waiting
+  to be wrong. Do not reintroduce it, and do not add a "current state" summary
+  anywhere else. When behavior changes, the as-built document in
+  `docs/implementation/` is updated in the same change; if the reasoning behind
+  a decision is worth keeping, it belongs in that document as a paragraph, not
+  in a parallel tree.
 - Report which commands you actually ran, and anything you did not run.
