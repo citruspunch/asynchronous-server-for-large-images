@@ -305,11 +305,17 @@ def test_supersede(host, port, image, w, h, z, cols, rows):
                                            0, min(15, rows - 1))))
         s.sendall(mask_frame(OP_BIN, commit(image, 1)))
         time.sleep(0.02)
-        # gen 2 supersedes it almost immediately
+        # gen 2 supersedes it almost immediately. The window MUST be clamped to
+        # the real grid: an out-of-range maxX fails the server's viewport check,
+        # which records the chunk in rejectedReqIds and then closes on its
+        # COMMIT. On a 2048x2048 demo the finest level is only 4x4, so a fixed
+        # 4x4 window would ask for column 4 and 5.
         gx, gy = min(2, cols - 1), min(2, rows - 1)
-        s.sendall(mask_frame(OP_BIN, chunk(image, z, 2, gx, gx + 3, gy, gy + 3)))
+        gx1 = min(gx + 3, cols - 1)
+        gy1 = min(gy + 3, rows - 1)
+        s.sendall(mask_frame(OP_BIN, chunk(image, z, 2, gx, gx1, gy, gy1)))
         s.sendall(mask_frame(OP_BIN, commit(image, 2)))
-        expect2 = {(x, y) for y in range(gy, gy + 4) for x in range(gx, gx + 4)}
+        expect2 = {(x, y) for y in range(gy, gy1 + 1) for x in range(gx, gx1 + 1)}
         tiles, end, stray, stale1 = collect(st, image, 2, expect2, deadline_s=30)
         for m in stray:
             fail(f"supersede: {m}")
