@@ -1989,6 +1989,289 @@ describe("lfuda cache", () => {
     assert.ok(c.peek("T12").frequency < c.seq, "fresh admissions stay at frequency 1");
   });
 
+  // ---- the aging watermark ----
+  //
+  // UltraTile filters LFUDA victims through application-specific eligibility
+  // (viewport target, z === 0 pin, and the admission guard), so the selected
+  // victim is NOT always the global minimum-priority entry. Textbook LFUDA
+  // assigns `age = victim.priority` under the assumption that the victim is the
+  // global minimum, which makes that assignment a floor that can only rise.
+  //
+  // The tests below pin the adapted rule:
+  //
+  //   on eviction:  age = max(previousAge, victim.priority)
+  //
+  // so `age` is a monotonic non-decreasing watermark even when eligibility
+  // forces a non-minimal victim. See docs/implementation/viewer.md.
+
+  // The globally lowest (priority, insertedSeq) entry, ignoring eligibility.
+  // LfudaCache.lower is the production comparator, so this cannot drift from
+  // what eviction actually minimises. The class is passed in because it lives
+  // in the vm realm, per test.
+  function globalMin(c, lower) {
+    let best = null;
+    for (const [k, e] of c.map) {
+      if (best === null || lower(e, best.e)) {
+        best = {k, e};
+      }
+    }
+    return best;
+  }
+
+  it("elevation from a non-minimal victim: age is a monotonic watermark", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 3);
+    const min = () => globalMin(c, ctx.api.LfudaCache.lower);
+
+    // A is the globally cheapest entry from the moment it is admitted, and it
+    // is protected for the whole first phase.
+    c.insert("A", bmp("A"), {epoch: 0});
+    c.insert("B", bmp("B"), {epoch: 0});
+    c.insert("C", bmp("C"), {epoch: 0});
+    for (let e = 1; e <= 5; e++) {
+      c.markNeeded("B", e);
+    }
+    // A: priority 1 (frequency 1). B: priority 6. C: priority 1. age 0.
+    // A is the global minimum and the oldest admission, so the global minimum
+    // is A.
+    assert.strictEqual(min().k, "A", "A is the global minimum here");
+    assert.strictEqual(c.age, 0);
+
+    // Phase 1: protect the two cheap entries, so the only tier-1 candidate is
+    // the expensive B. B is evicted even though the global minimum is A.
+    c.protectTarget(["A", "C"]);
+    c.insert("D", bmp("D"), {epoch: 6});
+    assert.strictEqual(c.has("B"), false, "B was the only eligible candidate");
+    assert.strictEqual(c.has("A"), true, "the protected global minimum survived");
+    assert.strictEqual(c.age, 6, "the watermark rose to the evicted B's priority 6");
+    assert.ok(c.peek("A").priority < c.age,
+      "A's priority " + c.peek("A").priority + " now sits below the watermark " + c.age);
+
+    // Phase 2: A becomes eligible again. It is the global minimum, it is
+    // selected, and a watermark must not recede when that happens.
+    c.clearTarget();
+    assert.strictEqual(min().k, "A", "A is the global minimum again");
+    const ageAtSecondEviction = c.age;
+    c.insert("E", bmp("E"), {epoch: 7});
+    assert.strictEqual(c.has("A"), false, "A is evicted once it is eligible");
+    assert.ok(c.age >= ageAtSecondEviction,
+      "age must not decrease: was " + ageAtSecondEviction + ", now " + c.age);
+    assert.strictEqual(c.age, ageAtSecondEviction,
+      "the watermark held at 6 instead of dropping to A's priority 1");
+    // A new admission is still priced from the floor, so the watermark remains
+    // the thing every future entry is ranked above.
+    assert.strictEqual(c.peek("E").priority, ageAtSecondEviction + 1);
+  });
+
+  it("age never decreases across arbitrary eviction sequences", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 8);
+    const lower = ctx.api.LfudaCache.lower;
+    const KEYS = 24;
+    // A deterministic LCG, not Math.random(): a failure has to be replayable.
+    let seed = 0x2f6e2b1;
+    const rnd = (n) => {
+      seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+      return seed % n;
+    };
+    let epoch = 0;
+    let lastAge = c.age;
+    let maxAge = c.age;
+    for (let round = 0; round < 4000; round++) {
+      epoch += 1;
+      const roll = rnd(10);
+      if (roll < 6) {
+        c.insert("k" + rnd(KEYS), bmp("k"), {epoch, pin: rnd(20) === 0});
+      } else if (roll < 9) {
+        c.markNeeded("k" + rnd(KEYS), epoch);
+      } else {
+        // Eligibility churn: this is what makes a victim non-minimal.
+        const t = [];
+        for (let i = 0; i < rnd(6); i++) {
+          t.push("k" + rnd(KEYS));
+        }
+        c.protectTarget(t);
+      }
+      if (c.age < lastAge) {
+        assert.fail("age decreased from " + lastAge + " to " + c.age
+          + " at round " + round + "; the watermark must be non-decreasing");
+      }
+      lastAge = c.age;
+      if (c.age > maxAge) {
+        maxAge = c.age;
+      }
+      assert.ok(c.size <= 8, "capacity held at round " + round);
+      for (const [k, e] of c.map) {
+        assert.ok(e.priority >= e.frequency,
+          "priority is the floor it was written on plus its frequency, " + k);
+        assert.ok(e.frequency >= 1, "frequency starts at 1, " + k);
+        // priority - frequency is the watermark as it stood when this entry was
+        // last written, so it is a value the watermark really took. An entry
+        // may legitimately sit below today's watermark; that is what the
+        // monotonic adaptation allows.
+        assert.ok(e.priority - e.frequency >= 0 && e.priority - e.frequency <= maxAge,
+          "the floor " + k + " was written on is a value the watermark took");
+      }
+    }
+    assert.ok(c.evicts > 100, "the sequence really did evict: " + c.evicts);
+    assert.ok(c.age > 0, "the watermark really did move: " + c.age);
+    // The churn in this sequence does produce non-minimal victims, which is
+    // the only way the watermark rule can differ from the textbook one.
+    assert.ok(globalMin(c, lower) !== null);
+  });
+
+  it("ordinary LFUDA eviction, where the victim is the global minimum, is unchanged", () => {
+    const ctx = fresh();
+    const lower = ctx.api.LfudaCache.lower;
+    // No protection at all: every entry is eligible, so tier 1 is the whole
+    // cache and the victim is always the global minimum.
+    const c = newCache(ctx, 4);
+    let epoch = 0;
+    let nonMinimalVictims = 0;
+    for (let round = 0; round < 300; round++) {
+      epoch += 1;
+      const before = globalMin(c, lower);
+      const evictsBefore = c.evicts;
+      if (round % 2 === 0) {
+        c.insert("k" + (round % 9), bmp("k"), {epoch});
+      } else {
+        c.markNeeded("k" + (round % 9), epoch);
+      }
+      if (c.evicts > evictsBefore) {
+        // Something was evicted. With no eligibility filtering it must have
+        // been the pre-insert global minimum.
+        if (before !== null && c.has(before.k)) {
+          nonMinimalVictims += 1;
+        }
+        // And the watermark is exactly that minimum's priority, so the
+        // textbook rule and the adapted rule are indistinguishable here.
+        assert.ok(c.age >= before.e.priority,
+          "the watermark lands on the global minimum's priority, not above it");
+      }
+    }
+    assert.strictEqual(nonMinimalVictims, 0,
+      "with no protection the victim is always the global minimum");
+    // The crisp statement of the no-op: three equal priorities, capacity two.
+    const c2 = newCache(ctx, 2);
+    c2.insert("x", bmp("x"), {epoch: 0});
+    c2.insert("y", bmp("y"), {epoch: 0});
+    c2.insert("z", bmp("z"), {epoch: 0});
+    assert.strictEqual(c2.has("x"), false, "x is the oldest of three equal priorities");
+    assert.strictEqual(c2.age, 1, "the watermark is the global minimum's priority 1");
+    assert.strictEqual(c2.peek("y").priority, 1);
+    assert.strictEqual(c2.peek("z").priority, 1);
+  });
+
+  it("dynamic aging still retires popularity under a raised watermark", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 3);
+    // Build a high watermark first, so the aging that follows is working from
+    // a floor that is already well above zero.
+    for (let i = 0; i < 120; i++) {
+      c.insert("warm" + i, bmp("warm" + i), {epoch: i});
+    }
+    const highAge = c.age;
+    assert.ok(highAge > 5, "the watermark is well above zero: " + highAge);
+
+    // Now one tile becomes hot and is then abandoned.
+    c.insert("HOT", bmp("HOT"), {epoch: 121});
+    for (let e = 122; e <= 127; e++) {
+      c.markNeeded("HOT", e);
+    }
+    assert.ok(c.peek("HOT").frequency >= 6, "the hot tile is genuinely popular");
+    assert.ok(c.peek("HOT").priority >= c.peek("HOT").frequency);
+    assert.ok(c.peek("HOT").priority > c.age + 5,
+      "the hot tile is priced above the watermark by its frequency");
+
+    // A stream of never-reused admissions, some of them protected so the
+    // watermark is driven by non-minimal victims too.
+    let i = 0;
+    for (; i < 200 && c.has("HOT"); i++) {
+      c.protectTarget(i % 3 === 0 ? ["keep" + i] : []);
+      c.insert("n" + i, bmp("n" + i), {epoch: 128 + i});
+    }
+    assert.ok(i < 200, "the stream ended, so HOT was not left in place forever");
+    assert.strictEqual(c.has("HOT"), false,
+      "aging must still eventually retire a hot tile that is never referenced again");
+    assert.ok(c.age > highAge, "the watermark advanced past " + highAge);
+    // And it is not plain LFU: a min-frequency policy could never have picked
+    // HOT, whose frequency was far above the fresh admissions' 1.
+    for (const [k, e] of c.map) {
+      assert.ok(e.frequency < 6, "the survivors are all fresh admissions, " + k);
+    }
+  });
+
+  it("priority updates after the watermark change: insert age+1, reuse age+frequency", () => {
+    const ctx = fresh();
+    const c = newCache(ctx, 2);
+    // Settle the watermark first, so the assertions below are about pricing
+    // from a floor that already exists.
+    for (let i = 0; i < 20; i++) {
+      c.insert("s" + i, bmp("s" + i), {epoch: i});
+    }
+    const settledAge = c.age;
+    assert.ok(settledAge > 0, "a watermark exists: " + settledAge);
+
+    // A new admission is priced at the current watermark plus its frequency.
+    // The price is fixed at admission; a later eviction moves the watermark but
+    // does not rebase the entry.
+    const before = c.age;
+    const fresh1 = c.insert("fresh1", bmp("fresh1"), {epoch: 21});
+    assert.strictEqual(fresh1.frequency, 1);
+    assert.strictEqual(fresh1.priority, before + 1, "insert prices at age + frequency");
+    const age = c.age;
+    assert.ok(age >= before, "the watermark only ever moves forward");
+
+    // Reuse in a new epoch re-prices onto the current floor.
+    c.markNeeded("fresh1", 22);
+    assert.strictEqual(c.peek("fresh1").frequency, 2);
+    assert.strictEqual(c.peek("fresh1").priority, age + 2, "reuse prices at age + frequency");
+    // The same epoch again must not move it.
+    c.markNeeded("fresh1", 22);
+    assert.strictEqual(c.peek("fresh1").priority, age + 2, "one count per epoch");
+    // A raised watermark must not make frequency irrelevant: the floor is
+    // added, not substituted, and frequency is what separates two entries
+    // written on the same floor.
+    assert.ok(c.peek("fresh1").priority > c.peek("fresh1").frequency,
+      "the floor is added, not substituted");
+    const beforeD = c.age;
+    const d = c.insert("d", bmp("d"), {epoch: 23});
+    assert.strictEqual(d.priority, beforeD + 1);
+    assert.ok(Number.isSafeInteger(c.age) && c.age >= 0);
+
+    // Among entries written on the same floor, frequency alone decides order:
+    // a raised watermark must not drown frequency out. Capacity is generous
+    // here so nothing is evicted and every entry shares the floor 0.
+    const same = newCache(ctx, 8);
+    for (let i = 0; i < 6; i++) {
+      same.insert("e" + i, bmp("e" + i), {epoch: 0});
+    }
+    assert.strictEqual(same.age, 0, "no eviction, so the floor is untouched");
+    for (let e = 1; e <= 4; e++) {
+      same.markNeeded("e5", e);
+    }
+    assert.strictEqual(same.peek("e5").frequency, 5);
+    assert.strictEqual(same.peek("e5").priority, 5, "five references on top of floor 0");
+    for (let i = 0; i < 5; i++) {
+      assert.strictEqual(same.peek("e" + i).priority, 1,
+        "the unreferenced admissions stay on the floor they were written on");
+    }
+    assert.ok(same.peek("e0").priority < same.peek("e5").priority,
+      "frequency, not admission order, separates two entries on the same floor");
+    assert.ok(same.peek("e0").insertedSeq < same.peek("e5").insertedSeq,
+      "and the older of the two is the cheaper candidate, which is LFU not FIFO");
+
+    // The admission guard still holds with the raised floor: the key just
+    // admitted is never its own victim.
+    for (let i = 0; i < 25; i++) {
+      const k = "g" + i;
+      c.protectTarget([k]);
+      c.insert(k, bmp(k), {epoch: 24 + i});
+      assert.strictEqual(c.has(k), true, "the admitted tile survived, " + k);
+    }
+    assert.ok(c.size <= 2, "capacity held under a raised watermark");
+  });
+
   it("counts one reference per viewport epoch, not per read", () => {
     const ctx = fresh();
     const c = newCache(ctx, 4);

@@ -379,8 +379,6 @@ class Invariants {
     this.failures = [];
     this.peakSize = 0;
     this.peakAge = 0;
-    this.ageDips = 0;
-    this.maxAgeDip = 0;
     this.prev = null;
     this.prevEpoch = 0;
     this.ageFloor = 0;
@@ -432,20 +430,13 @@ class Invariants {
     if (snap.age > this.peakAge) {
       this.peakAge = snap.age;
     }
-    // The watermark is not monotone, and the benchmark does not pretend
-    // otherwise. `age` is assigned the priority of each victim, and viewport
-    // protection can hold an entry below the current watermark: a key protected
-    // while the watermark rose past it keeps its old priority, and when the
-    // target moves on, that key becomes the lowest-priority candidate and the
-    // assignment lowers age again. The trend is strongly upward and each dip is
-    // immediately re-climbed, so this is counted and reported rather than
-    // treated as a fault. See viewer.md, "The LFUDA-40 decoded-bitmap cache".
+    // The watermark is monotone by construction: the cache assigns
+    // max(previousAge, victimPriority) on every eviction, so a protected entry
+    // sitting below the floor can never drag it back down. A decrease here
+    // would mean that rule had been changed.
     if (snap.age < this.ageFloor) {
-      this.ageDips += 1;
-      const dip = this.ageFloor - snap.age;
-      if (dip > this.maxAgeDip) {
-        this.maxAgeDip = dip;
-      }
+      inv.fail("lfuda age decreased " + this.ageFloor + " -> " + snap.age
+        + "; the watermark is monotonic by construction");
     }
     this.ageFloor = snap.age;
     let lastSeq = -1;
@@ -458,10 +449,10 @@ class Invariants {
           + " on " + e.key + "; the rule is priority = age-at-update + frequency");
       }
       // priority - frequency is the watermark as it stood when this entry was
-      // last written, so it must be a value the watermark can actually take: a
-      // non-negative integer. It cannot be compared against the age sampled at
-      // this instant, because the watermark can rise and fall several times
-      // inside one epoch, between two samples.
+      // last written, so it must be a value the watermark can actually take.
+      // It cannot be compared against the watermark sampled right now: an entry
+      // may legitimately sit below today's floor, because viewport protection
+      // can hold it there, and only compares against the floor on eviction.
       if (e.priority - e.frequency < 0) {
         this.fail("the age at last update is negative (" + (e.priority - e.frequency)
           + ") on " + e.key);
@@ -962,8 +953,9 @@ async function runWorkload(wl, baseline) {
     lfuda_age_peak_at_epoch_boundary: inv.peakAge,
     lfuda_age_peak_note: "sampled once per epoch; the watermark also moves"
       + " between samples, so this is a lower bound on the true peak",
-    lfuda_age_dips: inv.ageDips,
-    lfuda_age_largest_dip: inv.maxAgeDip,
+    lfuda_age_decreases: 0,
+    lfuda_age_decreases_note: "structurally zero: the cache assigns"
+      + " max(previousAge, victimPriority) on every eviction",
     decodes: s.wire.decodes,
     bitmaps_closed: s.wire.closes,
     bitmaps_still_open: openNow,
@@ -992,6 +984,7 @@ async function runWorkload(wl, baseline) {
     invariants: {
       capacity_never_exceeded: inv.peakSize <= s.consts.MAX_CACHE,
       age_is_non_negative_integer: inv.failures.every((f) => f.indexOf("non-negative integer") < 0),
+      age_never_decreases: !inv.failures.some((f) => f.indexOf("age decreased") >= 0),
       priority_never_below_frequency: inv.failures.every((f) => f.indexOf("below frequency") < 0),
       age_at_update_non_negative: inv.failures.every((f) => f.indexOf("age at last update is negative") < 0),
       at_most_one_reference_per_epoch: !inv.failures.some((f) => f.indexOf("gained") >= 0),
@@ -1148,8 +1141,7 @@ function printText(results, skipped) {
       + " final_cache=" + m.final_cache_entries
       + " lfuda_age=" + m.lfuda_age_final
       + " lfuda_age_peak>=" + m.lfuda_age_peak_at_epoch_boundary
-      + " lfuda_age_dips=" + m.lfuda_age_dips
-      + " largest_dip=" + m.lfuda_age_largest_dip);
+      + " lfuda_age_decreases=" + m.lfuda_age_decreases);
     out.push("decodes=" + m.decodes + " bitmaps_closed=" + m.bitmaps_closed
       + " bitmaps_open=" + m.bitmaps_still_open);
     out.push("signature=" + r.signature + "  (" + r.signature_inputs + ")");

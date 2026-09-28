@@ -167,7 +167,22 @@ class LfudaCache {
       if (v === null) {
         break;
       }
-      this.age = v.e.priority;  // dynamic aging: the floor rises to the victim
+      // Dynamic aging, as a monotonic watermark.
+      //
+      // Textbook LFUDA writes `age = victim.priority` and relies on the victim
+      // being the global minimum-priority object, which makes the assignment a
+      // floor that can only rise. UltraTile does not have that guarantee: the
+      // tiers above restrict the candidate set to viewport- and pin-eligible
+      // keys, so the selected victim can be a higher-priority entry than some
+      // protected one. A protected key can therefore sit below the watermark,
+      // and evicting it later would drag the floor back down and undo the
+      // discount the aging exists to apply.
+      //
+      // The max is the minimal adaptation that restores the watermark property
+      // under eligibility filtering. When the victim IS the global minimum,
+      // victim.priority >= age already holds and this is a no-op, so ordinary
+      // LFUDA eviction is bit-for-bit unchanged.
+      this.age = Math.max(this.age, v.e.priority);
       this.map.delete(v.k);
       this.pinned.delete(v.k);
       this.target.delete(v.k);

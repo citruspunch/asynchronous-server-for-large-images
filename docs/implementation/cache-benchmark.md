@@ -40,7 +40,7 @@ it instrumented a copy of the bundle. That is a bad reason to keep a
 measurement you intend to cite: nobody else can run it, and nobody can check it.
 
 **Correctness tests and workload behaviour are different claims.**
-`scripts/test_viewer.cjs` proves the policy is correct, with 20 unit vectors
+`scripts/test_viewer.cjs` proves the policy is correct, with 21 unit vectors
 against the exported class and 4 integration vectors against the wiring. It does
 not, and cannot, tell you what the policy does over 130 viewport operations
 against real tiles. This harness is the other half, and §
@@ -233,22 +233,38 @@ historical baseline. Historical comparative values are evidence about one
 session, not protocol requirements, and the regular test suite does not run this
 harness at all.
 
-### The `age` watermark is not monotone, and the benchmark says so
+### The `age` watermark is monotone
 
-`age` is assigned the priority of each victim. Viewport protection can hold an
-entry below the current watermark: a key that was protected while the watermark
-rose past it keeps its old priority, and when the target moves on, that key
-becomes the lowest-priority candidate and the assignment lowers `age` again. The
-trend is strongly upward and each dip is re-climbed immediately, so the
-harness counts decreases and reports the largest one as
-`lfuda_age_largest_dip` rather than treating them as faults. Observed on the
-real ladder: 2 to 11 decreases per session, largest 14 to 26.
+`age` is a **monotonic non-decreasing watermark**. On every eviction the cache
+assigns
 
-An earlier version of this harness asserted that `age` never decreases. It
-failed, and the failure was real. The rule is `age = victim.priority`, not
-`age = max(age, victim.priority)`; see
-[viewer.md](viewer.md#the-lfuda-40-decoded-bitmap-cache) for what that means for
-the policy and why it has not been changed.
+```text
+age = max(previousAge, victim.priority)
+```
+
+Textbook LFUDA writes `age = victim.priority` and gets a floor that can only
+rise because it assumes the victim is the global minimum-priority object.
+UltraTile does not have that assumption: viewport and `z === 0` protection filter
+the candidate set, so the selected victim can be a *higher*-priority entry than
+some protected one. That leaves a protected key below the watermark, and evicting
+it later would drag the floor back down and undo the discount the aging exists to
+apply. The `max` is the minimal adaptation that keeps the watermark property
+under that eligibility layer, and it is a no-op when the victim is the global
+minimum, so ordinary LFUDA eviction is unchanged.
+
+The benchmark therefore treats a decrease as a **hard failure**, not a reported
+observation:
+
+```text
+age_never_decreases=true
+lfuda_age_decreases=0
+```
+
+An earlier version of this harness had the opposite rule. It had measured 2 to 11
+decreases per session and rationalised them as a property of the algorithm rather
+than a defect. That was wrong on both counts: the decreases came from eligibility
+filtering, not from LFUDA, and `age` is a watermark, so it does not recede. See
+[viewer.md](viewer.md#the-lfuda-40-decoded-bitmap-cache), which owns the rule.
 
 ## The decision signature
 
@@ -296,15 +312,15 @@ node scripts/cache_workload_benchmark.cjs --keep-server
 CACHE-WORKLOAD image-6-1080p
 image=6 (40000x30131) viewport=1920x1080 policy=LFUDA-40 capacity=40 union_cap=36
 epochs=139 viewport_operations=131 viewport_needs=2575
-hits=2154 misses=421 evictions=400
-refetches=254 refetch_bytes=26457969 refetches_excl_image_switch=247
-rx_bytes=46017731 decoded_bytes=46017731 requests=81
-peak_cache=40 final_cache=7 lfuda_age=0 lfuda_age_peak>=136 lfuda_age_dips=10 largest_dip=19
-decodes=459 bitmaps_closed=452 bitmaps_open=7
-signature=cf7c7714  (per viewport operation: epoch,requested,hits,misses,evictions,size,age)
+hits=2158 misses=417 evictions=396
+refetches=250 refetch_bytes=25977289 refetches_excl_image_switch=243
+rx_bytes=45537051 decoded_bytes=45537051 requests=79
+peak_cache=40 final_cache=7 lfuda_age=0 lfuda_age_peak>=152 lfuda_age_decreases=0
+decodes=455 bitmaps_closed=448 bitmaps_open=7
+signature=8eed8bfe  (per viewport operation: epoch,requested,hits,misses,evictions,size,age)
 historical-baseline Lru-40 workload_comparable=false misses=220 evictions=175 re_fetches=52 re_fetch_bytes=5630992 rx_bytes=26556454
 historical-degenerate-traces=3 (small back-and-forth x10, serpentine 6 cols x 5 rows, wide sweep 20 steps)  -- side-by-side only, NOT a delta; see docs/implementation/cache-benchmark.md
-invariants capacity_never_exceeded=true age_is_non_negative_integer=true priority_never_below_frequency=true age_at_update_non_negative=true at_most_one_reference_per_epoch=true inserted_seq_strictly_increasing=true snapshot_agrees_with_hud=true wire_rx_bytes_agrees_with_viewer=true no_bitmap_closed_twice=true decode_close_balance=true protected_target_survived_its_epoch=true union_cap_below_capacity=true aging_was_engaged=true
+invariants capacity_never_exceeded=true age_is_non_negative_integer=true age_never_decreases=true priority_never_below_frequency=true age_at_update_non_negative=true at_most_one_reference_per_epoch=true inserted_seq_strictly_increasing=true snapshot_agrees_with_hud=true wire_rx_bytes_agrees_with_viewer=true no_bitmap_closed_twice=true decode_close_balance=true protected_target_survived_its_epoch=true union_cap_below_capacity=true aging_was_engaged=true
 PASS
 
 CACHE-BENCH-OK 4 workload(s), 0 invariant failures
@@ -317,23 +333,35 @@ roughly 130 operations per workload.
 
 Measured on the published ESO pyramids, 2026-09-27, with the canonical harness:
 
-| Workload | ops | needs | hits | misses | evict | re-fetches | re-fetch bytes | rxBytes | peak | age peak |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `image-4-1080p` | 131 | 2486 | 2134 | 352 | 331 | 244 | 26.57 MB | 39.47 MB | 40 | >=122 |
-| `image-5-1080p` | 132 | 2254 | 2063 | 191 | 170 | 93 | 8.98 MB | 20.00 MB | 40 | >=80 |
-| `image-6-1080p` | 131 | 2575 | 2154 | 421 | 400 | 254 | 26.46 MB | 46.02 MB | 40 | >=136 |
-| `image-6-4k` | 131 | 2584 | 2144 | 440 | 400 | 286 | 27.16 MB | 44.58 MB | 40 | >=124 |
+| Workload | ops | needs | hits | misses | evict | re-fetches | re-fetch bytes | rxBytes | peak | age peak | decreases | signature |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `image-4-1080p` | 131 | 2486 | 2139 | 347 | 326 | 239 | 25.94 MB | 38.84 MB | 40 | >=138 | 0 | `7255b2e4` |
+| `image-5-1080p` | 132 | 2254 | 2065 | 189 | 168 | 91 | 8.91 MB | 19.93 MB | 40 | >=84 | 0 | `9766dd98` |
+| `image-6-1080p` | 131 | 2575 | 2158 | 417 | 396 | 250 | 25.98 MB | 45.54 MB | 40 | >=152 | 0 | `8eed8bfe` |
+| `image-6-4k` | 131 | 2584 | 2153 | 431 | 391 | 277 | 26.70 MB | 44.12 MB | 40 | >=150 | 0 | `2eaf7389` |
 
-Signatures: `a9c3b97e`, `42043f8f`, `cf7c7714`, `5f3dd845`. All four reproduce
-exactly across independent runs, and so does every metric above including the
-byte totals.
+Signatures reproduce exactly: four independent full runs produced these four
+signatures and agreed on every metric above, byte totals included. The age peak
+is sampled once per epoch and is therefore a lower bound on the true peak.
+
+These are the signatures for the monotonic watermark
+(`age = max(age, victim.priority)`). The pre-fix signatures were `a9c3b97e`,
+`42043f8f`, `cf7c7714`, `5f3dd845`; they are not expected to survive a change
+to the aging rule, and they are recorded here only so the two can be told apart.
 
 What this shows: the cache fills to exactly 40 and holds there, sustains a hit
-rate of 82 to 92 % of viewport needs, ages actively, and never leaks a bitmap or
-exceeds its bound. `image-6` at 1920x1080 and at 3840x2160 ask for the same 24
-keys per viewport, which is the `UNION_CAP` result described in
+rate of 86 to 92 % of viewport needs, ages actively with a watermark that never
+recedes, and never leaks a bitmap or exceeds its bound. `image-6` at 1920x1080
+and at 3840x2160 ask for the same 24 keys per viewport, which is the
+`UNION_CAP` result described in
 [viewer.md](viewer.md#why-the-4k-viewport-is-not-actually-tight-any-more): a
 larger window does not mean a larger request.
+
+The monotonic rule does move the numbers slightly against the pre-fix run:
+misses fall by 1 to 2 %, evictions by 1 to 2 %, re-fetches by 1 to 3 %, and the
+watermark peaks 10 to 13 % higher. That is the expected consequence of a floor
+that only rises, not an optimisation target: nothing here was tuned for a better
+score, and the historical LRU fixture was not consulted while choosing the fix.
 
 ## The historical comparison, and why it is not a delta
 
@@ -405,9 +433,9 @@ scripts/test_viewer.cjs            proves the cache is correct
 scripts/cache_workload_benchmark.cjs   shows what it does on real workloads
 ```
 
-`test_viewer.cjs` owns correctness: 20 LFUDA vectors including the one that
-proves the policy is not least-recently-used, plus the `UNION_CAP` structural
-invariant. It runs in `node:vm` with no network, takes about three minutes, and
+`test_viewer.cjs` owns correctness: 25 LFUDA vectors including the one that
+proves the policy is not least-recently-used, the five that pin the aging
+watermark, and the `UNION_CAP` structural invariant. It runs in `node:vm` with no network, takes about three minutes, and
 is part of the offline validation track.
 
 This harness owns behaviour. It needs a live server and the real pyramids, takes

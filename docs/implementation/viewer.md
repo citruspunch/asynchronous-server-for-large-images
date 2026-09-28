@@ -372,11 +372,42 @@ per-entry frequency plus a global aging watermark, so that popularity earned
 long ago stops mattering as the cache keeps working, instead of pinning a tile
 forever the way naive LFU does.
 
+Precisely what is textbook LFUDA and what is an UltraTile adaptation. The
+distinction matters because a viewer adds a protection layer that a textbook
+cache does not have, and the adaptation exists only to keep LFUDA working under
+it:
+
+```text
+LFUDA core, unchanged:
+  frequency              reuse count for a tile
+  priority = age + frequency
+  dynamic aging          age rises as the cache works
+  victim                 the lowest priority among the candidates
+
+UltraTile adaptations, each documented and tested below:
+  viewport + z0 eligibility   which keys MAY be evicted
+  admission exclusion         the just-admitted key is never its own victim
+  once-per-epoch references   what counts as a frequency
+  monotonic watermark         age = max(age, victim.priority)
+```
+
+Stated as one sentence: UltraTile uses LFUDA replacement among **eligible** cache
+entries, with dynamic frequency-based priorities and aging; because viewport and
+`z0` protection filter the candidate set, the global LFUDA age is maintained as a
+**monotonic** watermark using `max(currentAge, victimPriority)`.
+
 **Entry metadata.** Each cached tile carries `bitmap`, `bytes` (payload length,
 for the `decodedBytes` counter), `frequency`, `priority`, `insertedSeq`, and
 `lastCountedEpoch`. The cache additionally owns one global `age`, and two
 protection sets: `pinned` (the `z === 0` overview, set at insert) and `target`
 (the current viewport epoch's visible set).
+
+An entry's `priority` is fixed when it is written and rebased only when it is
+referenced again, so `priority - frequency` is the watermark as it stood at that
+moment. With the monotonic rule, an entry may legitimately sit **below** the
+current watermark: viewport protection can hold it there. It stays the cheapest
+candidate, so it is evicted first once it becomes eligible, which is the aging
+working as intended.
 
 **Insertion.** `insert(key, bitmap, {bytes, pin, epoch})` sets
 `frequency = 1` and `priority = age + frequency`, and stamps
@@ -408,7 +439,7 @@ redraw counter rather than a measure of useful reuse.
 1. build the eligible candidate set (below),
 2. take the entry with the **lowest `priority`**,
 3. break equal priorities by the **oldest `insertedSeq`**,
-4. set `age = victim.priority`,
+4. set `age = max(age, victim.priority)`, which is the monotonic watermark,
 5. `close()` the victim bitmap exactly once,
 6. drop it and increment `evicts`.
 
@@ -418,21 +449,20 @@ and `markNeeded()` never reorders anything. Eviction is a linear scan over at
 most 40 entries. There is no heap, no tree, and no auxiliary index, because at
 40 entries a scan is both fast enough and the thing a grader can audit.
 
-**The watermark is not monotone, and that is the implemented rule.** Step 4
-assigns the victim's priority; it does not clamp to the current value. A key can
-end up below the watermark: if viewport protection holds a key while the
-watermark rises past it, that key keeps its old priority, and when the target
-moves on it becomes the lowest-priority candidate, so the assignment lowers
-`age` again. Measured on the real ladder, `age` decreases 2 to 11 times per
-session, by 14 to 26 at the largest, and is re-climbed immediately every time;
-the trend across a session is strongly upward.
-`scripts/cache_workload_benchmark.cjs` counts the decreases and reports the
-largest one rather than treating them as faults, because they are a property of
-this rule and not evidence of a defect. Written as
-`max(age, victim.priority)` the watermark would be monotone, at the cost of never
-pricing a new admission from a dipped floor. That is a change to the policy, and
-the policy is frozen; see
-[cache-benchmark.md](cache-benchmark.md#the-age-watermark-is-not-monotone-and-the-benchmark-says-so).
+**The watermark is monotone by construction.** Step 4 assigns
+`age = max(previousAge, victim.priority)`. Textbook LFUDA writes
+`age = victim.priority` and relies on the victim being the global
+minimum-priority object, which makes that assignment a floor that can only
+rise. UltraTile does not have that guarantee: the tiers above restrict the
+candidate set to eligible keys, so the selected victim can be a
+higher-priority entry than some protected one. A protected key can therefore
+sit below the watermark, and evicting it later would drag the floor back down
+and undo the discount the aging exists to apply. The `max` is the minimal
+adaptation that restores the watermark property under eligibility filtering,
+and it is a no-op whenever the victim is the global minimum, because
+`victim.priority >= age` already holds in that case. So ordinary LFUDA eviction
+is unchanged, and the test `ordinary LFUDA eviction, where the victim is the
+global minimum, is unchanged` pins exactly that.
 
 **Protection is eligibility, LFUDA is the choice.** Two policies are kept
 separate on purpose:
@@ -483,12 +513,15 @@ The choice is forced and then made deliberate:
 - **Plain LFU is worse.** It retains historically popular tiles indefinitely. In
   a tiled viewer a tile that was hot for one region stays hot for the whole
   session and the region the user is actually looking at can never displace it.
-- **LFUDA adds dynamic aging.** `age` rises to each victim's priority, so the
+- **LFUDA adds dynamic aging.** `age` is raised to each victim's priority, so the
   floor for a new entry rises with the cache's own history and old popularity
-  bleeds off. The test `dynamic aging retires popularity that naive LFU would
-  keep forever` walks a hot tile to `priority 6` and then shows it surviving 11
-  further admissions before aging catches up and evicts it, which naive LFU
-  could never do.
+  bleeds off, and the rise is monotonic. The test `dynamic aging retires
+  popularity that naive LFU would keep forever` walks a hot tile to
+  `priority 6` and then shows it surviving 11 further admissions before aging
+  catches up and evicts it, which naive LFU could never do. A second test,
+  `dynamic aging still retires popularity under a raised watermark`, repeats
+  that from a watermark already well above zero, which is the case the
+  monotonic rule makes reachable.
 - **Reuse frequency is meaningful here.** Tiled-image users pan, zoom and come
   back to nearby regions, so a tile referenced across many viewport epochs is
   genuinely the one worth keeping.
@@ -674,6 +707,6 @@ why it exists and why the alternative was worse.
 
 `scripts/test_viewer.cjs` concatenates the ten files into one `node:vm` script so
 the shared lexical scope behaves the way deferred script tags make it behave in a
-browser, then runs 63 tests against it. No browser, no network, no dependencies.
+browser, then runs 68 tests against it. No browser, no network, no dependencies.
 `scripts/cache_workload_benchmark.cjs` loads the same ten files the same way, but
 against a live server, to measure behaviour rather than prove correctness.

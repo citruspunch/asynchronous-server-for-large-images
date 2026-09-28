@@ -125,16 +125,20 @@ are in [cache-benchmark.md](cache-benchmark.md#results). What this supports is
 `MAX_CACHE` was deliberately left at 40. Nothing measured here implicates the
 capacity, so there is no evidence for raising it, and the memory cost is linear.
 
-### The aging watermark can decrease
+### An entry can sit below the aging watermark
 
-`age` is assigned the priority of each victim rather than clamped to the current
-value, so it can fall when viewport protection has held a key below the watermark
-and that key later becomes the victim. Measured on the real ladder it falls 2 to
-11 times per session, by at most 14 to 26, and is re-climbed immediately. This is
-the implemented rule and not a defect; it is described in
-[viewer.md](viewer.md#the-lfuda-40-decoded-bitmap-cache). An earlier version of
-the benchmark asserted monotonicity and failed; the assertion was wrong, not the
-cache.
+`age` is a monotonic watermark, maintained as `max(previousAge, victimPriority)`.
+That does **not** mean every cached entry sits at or above it. A key written
+early and then held below the rising floor by viewport protection keeps its old
+priority until the target moves on. It is the cheapest candidate, so it is
+evicted first once it becomes eligible, and the watermark does not move. That is
+the aging working as intended, not a defect, and it is described in
+[viewer.md](viewer.md#the-lfuda-40-decoded-bitmap-cache).
+
+The practical consequence for anyone reading `cacheSnapshot()`: do not assume
+`entry.priority >= cache.age`. Read `entry.priority - entry.frequency` instead,
+which is the watermark as it stood when that entry was last written and is
+guaranteed to be a value the watermark actually took.
 
 ### `covCov` is a weak signal
 

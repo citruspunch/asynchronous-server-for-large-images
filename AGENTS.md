@@ -119,11 +119,14 @@ These are the things that break silently.
     encode viewport relevance into a fake frequency. `MAX_CACHE` stays 40;
     changing the policy is not a reason to change the capacity, and
     `Config.CACHE_CAP` must move with it or parity fails.
-  - **`age` is assigned, not clamped.** `age = victim.priority` can *decrease*,
-    when protection held a key below the watermark and that key later became the
-    victim. It falls 2 to 11 times per real session and is re-climbed at once.
-    Do not "fix" this to `max(age, ...)` and do not assert monotonicity anywhere;
-    the policy is frozen. `docs/implementation/cache-benchmark.md` owns why.
+  - **`age` is a monotonic watermark: `max(age, victim.priority)`.** Textbook
+    LFUDA writes `age = victim.priority`, which only ever rises because it
+    assumes the victim is the global minimum. Viewport and `z === 0`
+    protection break that assumption, so a protected key can end up below the
+    watermark; the `max` is the minimal adaptation that keeps the floor from
+    receding. Never revert it to a bare assignment, and never assert
+    `entry.priority >= age`: a protected entry may legitimately sit below the
+    floor. `docs/implementation/viewer.md` owns why.
   - **The historical LRU numbers are a data fixture, not a code path.**
     `scripts/cache-baseline-lru.json` records the pre-migration measurements. It
     is never executed and cannot be regenerated. Do not add an LRU class, a

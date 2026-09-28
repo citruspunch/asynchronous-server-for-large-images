@@ -78,7 +78,7 @@ would weaken it.
 | Needs | nothing; no network | a live server and images 4, 5, 6 published |
 | Time | ~3 min | ~5 min |
 | In a suite | yes, offline validation track | no, optional evidence |
-| Owns | the 20 LFUDA unit and integration vectors, the `UNION_CAP` invariant | the workload definitions, the metric definitions, the deterministic decision signature, and the historical LRU fixture |
+| Owns | the 25 LFUDA unit and integration vectors, the `UNION_CAP` invariant | the workload definitions, the metric definitions, the deterministic decision signature, and the historical LRU fixture |
 
 `test_viewer.cjs` proves the policy. `cache_workload_benchmark.cjs` demonstrates
 it, and asserts the end-to-end properties a unit vector cannot state: bounded
@@ -150,7 +150,7 @@ the mechanism keeping tile naming single-sourced.
 
 ## The viewer suite
 
-`node scripts/test_viewer.cjs`, 63 tests, roughly three minutes, zero
+`node scripts/test_viewer.cjs`, 68 tests, roughly three minutes, zero
 dependencies. It concatenates the ten viewer modules into one `node:vm` script so
 the shared lexical scope behaves as deferred script tags make it behave in a
 browser, then tests against that.
@@ -165,7 +165,7 @@ before any tile draw, and `a single viewport can never ask for more than
 UNION_CAP tiles`, which is the structural invariant that stops one viewport from
 overflowing a 40-entry cache.
 
-The 20 tests under `lfuda cache` and `lfuda integration` are the cache-policy
+The 25 tests under `lfuda cache` and `lfuda integration` are the cache-policy
 vectors. The unit half runs against the exported `LfudaCache` directly, so every
 assertion is a function of the trace and nothing else: insertion at
 `frequency 1` / `priority age + 1`; lowest-frequency eviction; dynamic aging
@@ -182,6 +182,18 @@ and 10^6 epochs leaving every counter exactly representable. The integration hal
 covers the wiring: 60 redraws move no frequency at all, one epoch adds at most one
 count per tile, the HUD reports `hits`/`miss`/`lfuAge`, and a decode that resolves
 into a dead epoch is closed rather than admitted.
+
+Five of the unit vectors are the aging-watermark group and are worth reading
+together, because they separate LFUDA from the UltraTile adaptation layered on top
+of it:
+
+| Test | What it pins |
+| --- | --- |
+| `elevation from a non-minimal victim: age is a monotonic watermark` | The exact protection-induced scenario. A is the global minimum and is protected; the only eligible key is the expensive B, so B is evicted and the watermark jumps to B's priority; A then becomes eligible, is evicted, and the watermark must **hold**. Fails with `was 6, now 1` under the un-clamped rule. |
+| `age never decreases across arbitrary eviction sequences` | 4000 rounds of interleaved inserts, references, pins and target churn, asserting `age_after >= age_before`, capacity, and that each entry's `priority - frequency` is a value the watermark really took. Replayable: a deterministic LCG, never `Math.random()`. |
+| `ordinary LFUDA eviction, where the victim is the global minimum, is unchanged` | With no protection, tier 1 is the whole cache, the victim is always the global minimum, and the watermark lands exactly on that minimum's priority. This is the proof that the `max` is a no-op in the textbook case. |
+| `dynamic aging still retires popularity under a raised watermark` | Aging still displaces a hot tile that is never referenced again, starting from a watermark already well above zero. Guards against the monotonic floor turning LFUDA into plain LFU. |
+| `priority updates after the watermark change: insert age+1, reuse age+frequency` | Both price rules still hold at a raised floor, the floor is added and not substituted, frequency still separates two entries written on the same floor, and the admission guard still stops a just-admitted key evicting itself. |
 
 `is not least-recently-used: LFUDA and LRU pick different victims` is the one to
 read first. It replays one reference trace, works out the LRU victim by hand from
