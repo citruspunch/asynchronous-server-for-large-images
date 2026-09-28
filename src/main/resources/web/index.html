@@ -8,31 +8,42 @@
 </head>
 <body>
 <header>
+<div class="brand">
+<span class="mark" aria-hidden="true"></span>
 <h1>UltraTile</h1>
+<span id="status" class="busy">starting</span>
+</div>
+<div class="controls">
 <label for="image">Image</label>
 <select id="image"></select>
+</div>
 <span id="hud">
-<span>lod <b id="lod">0</b></span>
-<span>effZ <b id="effZ">0</b></span>
-<span>rxBytes <b id="rxBytes">0</b></span>
-<span>decodedBytes <b id="decodedBytes">0</b></span>
-<span>reqs <b id="reqs">0</b></span>
-<span>evicts <b id="evicts">0</b></span>
-<span>cache <b id="cache">0</b></span>
-<span>hits <b id="hits">0</b></span>
-<span>miss <b id="miss">0</b></span>
-<span>lfuAge <b id="lfuAge">0</b></span>
-<span>decJobs <b id="decJobs">0</b></span>
-<span>decBytes <b id="decBytes">0</b></span>
-<span>epoch <b id="epoch">0</b></span>
-<span>gen <b id="gen">0</b></span>
-<span>netCov <b id="netCov">0</b></span>
-<span>covCov <b id="covCov">0</b></span>
+<span title="Desired pyramid level from the current zoom. Compare with effZ.">lod <b id="lod">0</b></span>
+<span title="Effective level after the UNION_CAP budget. Below lod is a deliberate downgrade, not a fault.">effZ <b id="effZ">0</b></span>
+<span class="sep" title="TILE payload bytes received, duplicates included. Headers and framing are not counted.">rxBytes <b id="rxBytes">0</b></span>
+<span title="Payload bytes at cache insert. A payload counter, not bitmap memory.">decodedBytes <b id="decodedBytes">0</b></span>
+<span class="sep" title="Request IDs allocated since page load.">reqs <b id="reqs">0</b></span>
+<span title="Most recently allocated request ID.">gen <b id="gen">0</b></span>
+<span class="sep" title="LFUDA evictions. The cache is capped at 40 entries.">evicts <b id="evicts">0</b></span>
+<span title="Decoded bitmaps currently cached, out of 40.">cache <b id="cache">0</b></span>
+<span title="Viewport epochs satisfied by a tile already cached.">hits <b id="hits">0</b></span>
+<span title="Viewport epochs that needed a tile the cache did not hold, so it was re-fetched.">miss <b id="miss">0</b></span>
+<span title="LFUDA aging watermark. Above 0 means dynamic aging is driving eviction.">lfuAge <b id="lfuAge">0</b></span>
+<span class="sep" title="Decode queue length plus in-flight createImageBitmap calls.">decJobs <b id="decJobs">0</b></span>
+<span title="Bytes waiting in the decode queue.">decBytes <b id="decBytes">0</b></span>
+<span class="sep" title="Viewport epoch. Bumps on every pan, zoom, resize and image switch.">epoch <b id="epoch">0</b></span>
+<span class="sep" title="Network coverage: tiles received or server-skipped this epoch. This is the counter that matches the server.">netCov <b id="netCov">0</b></span>
+<span title="Coverage over the union of visible tiles at ALL levels while only one level is fetched, so it reads low by design. Nothing waits on it.">covCov <b id="covCov">0</b></span>
 </span>
 </header>
 <main>
 <canvas id="view"></canvas>
 </main>
+<footer>
+<span><kbd>drag</kbd> pan</span>
+<span><kbd>wheel</kbd> zoom at cursor</span>
+<span class="dim">tiles arrive as binary WebSocket frames on /ws &mdash; there is no HTTP tile route, so the Network tab stays empty</span>
+</footer>
 <script src="/js/constants.js" defer></script>
 <script src="/js/structures.js" defer></script>
 <script src="/js/state.js" defer></script>

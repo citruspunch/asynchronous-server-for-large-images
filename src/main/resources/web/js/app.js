@@ -282,6 +282,43 @@ function installHandlers() {
   void TAU;
 }
 
+// ---- browser entry point: the page has to start itself ----
+// boot() is the only startup flow, but it used to be reachable only through the
+// UltraTile seam, which both harnesses call explicitly. Nothing in a real page
+// load called it, so opening index.html did nothing at all: no
+// GET /api/images, so the picker stayed empty; no installHandlers(), so even a
+// hand-filled picker had no change listener; and no render(), so the canvas
+// stayed at its CSS background. Hence a black page with a dead dropdown.
+//
+// The guard is `typeof window`, the same probe installHandlers() already uses.
+// Neither the vm sandbox in test_viewer.cjs nor the one in
+// cache_workload_benchmark.cjs defines a window binding, so both still boot only
+// when the harness asks, and boot() is idempotent through bootPromise either
+// way. Keep this last in the file: it is the only top-level side effect in the
+// viewer, and everything it needs is defined above it.
+function setStatus(text, kind) {
+  try {
+    const el = globalThis.document.getElementById("status");
+    if (el) {
+      el.textContent = text;
+      el.className = kind || "";
+    }
+  } catch (e) {
+    /* status is cosmetic; never let it break startup */
+  }
+}
+
+if (typeof window !== "undefined" && typeof globalThis.document !== "undefined") {
+  setStatus("starting", "busy");
+  boot().then(() => {
+    setStatus("connected", "ok");
+  }, (e) => {
+    // A rejected boot is the difference between "working" and "a black
+    // rectangle", so name the failure instead of failing silently.
+    setStatus("startup failed: " + (e && e.message ? e.message : String(e)), "bad");
+  });
+}
+
 globalThis.UltraTile = {
   createReqAllocator,
   connectWs,

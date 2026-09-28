@@ -66,6 +66,30 @@ against `index.html`, and parity also fails if the old monolith
 6. `installHandlers()`.
 7. `render()`.
 
+**The page has to start itself.** `boot()` is the only startup flow, and it is
+also the entry point: the last top-level block in `app.js` calls it, guarded by
+`typeof window !== "undefined"`. Without that call the page did nothing at all
+on load — no `GET /api/images`, so the picker stayed empty; no
+`installHandlers()`, so the dropdown had no `change` listener; and no
+`render()`, so the canvas stayed at its `#000` CSS background. That presented as
+a black page under a live header, and nothing in the suite caught it because
+every test drives `boot()` explicitly through the seam.
+
+Two properties of the guard matter. It is the same `typeof window` probe
+`installHandlers()` already uses, and neither the `vm` sandbox in
+`scripts/test_viewer.cjs` nor the one in
+`scripts/cache_workload_benchmark.cjs` defines a `window` binding, so both
+harnesses still boot only when they call `boot()`, and `bootPromise` keeps a
+second call idempotent regardless. And the block is last in the file, so it is
+the only top-level side effect in the viewer and everything it needs is already
+defined above it.
+
+The same block drives the `#status` pill in the header: `starting`, then
+`connected`, or `startup failed: <message>`. A rejected boot is the difference
+between a working viewer and a black rectangle, so the page states which
+happened instead of failing silently. It is also the one place a boot failure
+is visible at all, since `render()` never runs to paint the HUD.
+
 `connectWs()` builds `ws://<location.host>/ws`, which is same-origin by
 construction, offers the subprotocol `ultratile.utp.v1` as the second argument,
 sets `binaryType = "arraybuffer"`, waits for `open`, and then asserts
@@ -703,6 +727,21 @@ any tile draw.
 viewport had to re-fetch, and `lfuAge` shows whether the aging watermark is
 moving. Per-entry frequency is deliberately not in the HUD; `cacheSnapshot()`
 exposes it for tests instead.
+
+**The page shell is presentation only.** `styles.css` and the markup in
+`index.html` carry the layout and nothing else; no viewer logic reads them, and
+the sixteen `<b>` values stay raw numbers because the harness reads them
+numerically (`+hud.rxBytes.textContent`, and `hud.effZ` compared as a string).
+The body is a flex column with the header and footer as `flex: 0 0 auto` and
+`main` as `flex: 1; min-height: 0`, so the canvas takes the space the header
+leaves rather than being pinned below a guessed offset. The offset approach was
+the old rule (`main { position: fixed; top: 3rem }`) and it was wrong: the HUD
+wraps onto a second line on an ordinary window, so 3rem was not the header
+height and the canvas overlapped it. `#view` is `position: absolute; inset: 0`
+inside a `position: relative` `main` so its box is always definite, which is
+what `resizeCanvas()` reads through `clientWidth`/`clientHeight` to size the
+backing store. Each HUD field also carries a `title` explaining what it counts
+and, for `effZ` and `covCov`, why a low value is correct rather than a fault.
 `covCov` is observational only and control flow never waits on it. It is worth
 knowing that it is computed over the union across every level `0..N` while only
 one effective level is being fetched, so in normal operation it reads low and is

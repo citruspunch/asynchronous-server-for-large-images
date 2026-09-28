@@ -1,9 +1,196 @@
-html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
-body { font-family: system-ui, sans-serif; background: #111; color: #eee; }
-header { display: flex; gap: 0.75rem; align-items: center; padding: 0.4rem 0.8rem;
-  background: #1c1c1c; flex-wrap: wrap; }
-header h1 { font-size: 1rem; margin: 0; }
-#hud { display: flex; gap: 0.7rem; font-size: 0.78rem; flex-wrap: wrap; }
-#hud b { font-variant-numeric: tabular-nums; font-weight: 600; }
-main { position: fixed; inset: 0; top: 3rem; }
-#view { width: 100%; height: 100%; background: #000; display: block; touch-action: none; }
+/* UltraTile viewer shell.
+ *
+ * Layout is a flex column, deliberately: the header holds a title, a picker and
+ * sixteen HUD fields that wrap, so its height is not a known constant. The
+ * canvas therefore takes the leftover space (main is flex: 1 with min-height: 0
+ * so it can actually shrink) instead of being pinned below a guessed offset.
+ * #view is absolutely positioned inside main so its box is always definite,
+ * which is what resizeCanvas() reads through clientWidth/clientHeight to size
+ * the backing store.
+ */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #0a0c10;
+  color: #e7ebf3;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- header ---- */
+
+header {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.1rem;
+  padding: 0.55rem 0.9rem;
+  background: linear-gradient(180deg, #161b24, #12161d);
+  border-bottom: 1px solid #222836;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mark {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 2px;
+  background: linear-gradient(135deg, #58a6ff, #3fb950);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+}
+
+header h1 {
+  font-size: 0.95rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+#status {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.16rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+/* A failed boot is the difference between "working" and "a black rectangle",
+ * so the pill is the one place the page says which happened. */
+#status.ok   { color: #7ee787; background: rgba(63, 185, 80, 0.12);  border-color: rgba(63, 185, 80, 0.35); }
+#status.busy { color: #e3b341; background: rgba(210, 153, 34, 0.12); border-color: rgba(210, 153, 34, 0.35); }
+#status.bad  { color: #ff7b72; background: rgba(248, 81, 73, 0.12);  border-color: rgba(248, 81, 73, 0.4);
+               text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.controls label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8b95a7;
+}
+
+#image {
+  font: inherit;
+  font-size: 0.82rem;
+  color: #e7ebf3;
+  background: #1b212b;
+  border: 1px solid #2c3444;
+  border-radius: 6px;
+  padding: 0.28rem 0.5rem;
+  min-width: 8.5rem;
+  cursor: pointer;
+}
+
+#image:hover { border-color: #3a4457; }
+#image:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 1px;
+}
+
+/* ---- HUD ---- */
+
+#hud {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.55rem;
+  font-size: 0.72rem;
+  color: #8b95a7;
+  margin-left: auto;
+}
+
+#hud span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.28rem;
+  white-space: nowrap;
+  padding: 0.14rem 0.4rem;
+  border-radius: 5px;
+  background: #1a1f28;
+  border: 1px solid #232a36;
+  cursor: help;
+}
+
+/* Group boundaries: level | bytes | protocol | cache | decode | viewport | coverage */
+#hud span.sep {
+  margin-left: 0.5rem;
+  border-left: 1px solid #2f3746;
+}
+
+#hud b {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #dce3f0;
+}
+
+/* ---- canvas ---- */
+
+main {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#view {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+  touch-action: none;
+  cursor: grab;
+}
+
+#view:active { cursor: grabbing; }
+
+/* ---- footer ---- */
+
+footer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  align-items: center;
+  padding: 0.34rem 0.9rem;
+  font-size: 0.7rem;
+  color: #7c8698;
+  background: #12161d;
+  border-top: 1px solid #222836;
+}
+
+footer .dim { color: #616b7d; }
+
+kbd {
+  font: inherit;
+  font-size: 0.68rem;
+  color: #cfd7e6;
+  background: #222836;
+  border: 1px solid #333c4d;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0.05rem 0.32rem;
+  margin-right: 0.3rem;
+}
