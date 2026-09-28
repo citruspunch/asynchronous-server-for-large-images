@@ -367,6 +367,24 @@ renamed recency list. LRU is deliberately absent from this codebase: the course
 requires each group to use a distinct replacement algorithm, and another group
 has taken LRU.
 
+The policy is **frozen**. This section, together with the 25 vectors under
+`lfuda cache` and `lfuda integration` in `scripts/test_viewer.cjs` and the
+invariants in `scripts/cache_workload_benchmark.cjs`, is the whole specification.
+Future work must not change it for benchmark results or for aesthetics. Reopen it
+only for a reproducible correctness problem found in a browser, an instructor
+rejecting the adaptation, or a grading requirement. The frozen properties are:
+
+```text
+LFUDA-40                capacity 40, LFUDA among eligible entries
+priority rule           priority = age + frequency
+monotonic age           age = max(previousAge, victim.priority)
+epoch reference rule    at most one frequency per viewport epoch
+victim comparator       (priority, insertedSeq), never recency
+admission guard         the just-admitted key is never its own victim
+target/Z0 protection    eligibility only, never a fake frequency
+bitmap ownership        exactly-once close() on eviction, clear and replace
+```
+
 LFUDA is the LRFU-family policy that subsumes plain LFU. The core idea is a
 per-entry frequency plus a global aging watermark, so that popularity earned
 long ago stops mattering as the cache keeps working, instead of pinning a tile
@@ -405,9 +423,14 @@ protection sets: `pinned` (the `z === 0` overview, set at insert) and `target`
 An entry's `priority` is fixed when it is written and rebased only when it is
 referenced again, so `priority - frequency` is the watermark as it stood at that
 moment. With the monotonic rule, an entry may legitimately sit **below** the
-current watermark: viewport protection can hold it there. It stays the cheapest
-candidate, so it is evicted first once it becomes eligible, which is the aging
-working as intended.
+current watermark: viewport protection can hold it there. That is not an error. It
+means a stale entry whose frequency has not been refreshed in a long time and
+which survived only because it was protected. Sitting below the floor is exactly
+what makes it the strongest eviction candidate once protection goes away, which
+is the aging working as intended rather than against it. And if the tile turns out
+to be useful again before it is evicted, the next epoch's reference reprices it
+from the *current* watermark, so it is not permanently disadvantaged by having
+been stale.
 
 **Insertion.** `insert(key, bitmap, {bytes, pin, epoch})` sets
 `frequency = 1` and `priority = age + frequency`, and stamps

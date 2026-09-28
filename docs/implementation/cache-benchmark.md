@@ -200,10 +200,33 @@ restarting history at each switch. Neither replaces the other; the gap between
 them is the cost of `clear()`.
 
 `rx_bytes` is cross-checked against the harness's own wire total, and a
-disagreement is a hard failure. Byte totals are **observational**: they depend on
-the libvips and JPEG versions that built the pyramid, so a re-import on a
-different machine will produce different numbers from the same source image. No
-byte total is ever asserted.
+disagreement is a hard failure. That check is between two readings of *the same
+frames*: the harness parses each TILE header itself, and `rxBytes` is the viewer's
+running total of the same `payloadLen` values.
+
+**`rx_bytes` and `decoded_bytes` are independent counters and are not expected to
+be equal in general.** They happen to be equal in every measurement recorded
+below, and that is an observation about these four workloads, not a property of
+the system. The two diverge legitimately whenever a frame is received but not
+decoded and admitted:
+
+- a duplicate TILE for a key the epoch already has
+- a stale frame from a superseded generation, discarded after its bytes are
+  counted
+- a tile whose `format` is not JPEG, which is marked terminally failed
+- a tile that overflows the decode queue and is queued for retry, so its bytes
+  are received more than once while the admission happens once
+- a decode rejection, or a tile dropped as unexpected
+
+So the correct reading of the results table is "on these workloads every received
+byte was admitted", not "these counters are equal". Nothing in the harness, the
+test suite, or the protocol treats their equality as required, and a future
+change that makes them differ would not be a bug.
+
+Separately, both counters are **observational** rather than asserted: their
+absolute values depend on the libvips and JPEG versions that built the pyramid,
+so a re-import on a different machine produces different numbers from the same
+source image.
 
 ## Hard invariants and observational metrics
 
@@ -356,6 +379,12 @@ and at 3840x2160 ask for the same 24 keys per viewport, which is the
 `UNION_CAP` result described in
 [viewer.md](viewer.md#why-the-4k-viewport-is-not-actually-tight-any-more): a
 larger window does not mean a larger request.
+
+`decoded_bytes` equals `rx_bytes` in all four rows. Read that as an observation
+about these workloads, meaning every received byte was admitted, and not as a
+system property: see
+[the metric definitions](#network-counted-from-the-wire) for why the two
+counters legitimately differ.
 
 The monotonic rule does move the numbers slightly against the pre-fix run:
 misses fall by 1 to 2 %, evictions by 1 to 2 %, re-fetches by 1 to 3 %, and the
