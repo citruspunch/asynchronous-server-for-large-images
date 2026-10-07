@@ -1,0 +1,52 @@
+# UltraTile: mise tooling and task runner.
+#
+# DEVELOPMENT / OFFLINE-VALIDATION ONLY. The authoritative clean-machine path
+# remains `./build.sh` then `java -jar target/ultratile-1.0.jar` (JDK 21 plus
+# standard Unix userland); mise is never a build or runtime requirement. These
+# tasks are thin wrappers around the existing scripts, so a task never
+# re-implements a command's logic or its argument validation. See AGENTS.md and
+# docs/implementation/operations.md.
+
+[tools]
+java = "temurin-21"
+maven = "3.9"
+node = "24"
+python = "3.12"
+
+[env]
+# libvips is keg-only in Homebrew; scripts/import_vips.sh needs vips and
+# vipsheader on PATH. Harmless on machines without this directory.
+_.path = ["/opt/homebrew/opt/vips/bin"]
+
+# --- Short wrappers: a single command each, defined inline ------------------
+# Tasks with real argument surfaces (import, verify, e2e, ...) live as task
+# files under .mise/tasks/ instead.
+
+[tasks.build]
+description = "Authoritative JDK-only build -> target/ultratile-1.0.jar"
+run = "./build.sh"
+
+[tasks.test]
+description = "JUnit suite (needs a primed ~/.m2)"
+run = "mvn -o -q test"
+
+[tasks.parity]
+description = "Shared-constant parity: Java <-> shell <-> JS"
+run = "python3 scripts/check_const_parity.py"
+
+[tasks."test:parser"]
+description = "WS frame-parser vectors, no server needed"
+run = "python3 scripts/test_e2e_parser.py"
+
+[tasks."test:viewer"]
+description = "Viewer suite (slow, no deps)"
+run = "node scripts/test_viewer.cjs"
+
+[tasks.benchmark]
+description = "Optional cache-workload evidence, ~5 min (needs images 4/5/6)"
+run = "node scripts/cache_workload_benchmark.cjs"
+
+[tasks.serve]
+description = "Run target/ultratile-1.0.jar (extra args are forwarded)"
+raw_args = true
+run = "java -jar target/ultratile-1.0.jar"

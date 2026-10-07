@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Real-image pipeline test with concurrent clients (scripts/real_pipeline_test.py [--port P] ...)"
+#MISE raw_args=true
+exec python3 scripts/real_pipeline_test.py "$@"

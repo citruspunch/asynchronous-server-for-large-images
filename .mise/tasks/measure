@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Measure a real import: timings, peak RSS, tile sizes (scripts/measure_import.py [<id>...])"
+#MISE raw_args=true
+exec python3 scripts/measure_import.py "$@"

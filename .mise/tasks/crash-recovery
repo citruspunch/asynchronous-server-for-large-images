@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Kill the importer at many points and assert recovery invariants (scripts/crash_recovery_test.py)"
+#MISE raw_args=true
+exec python3 scripts/crash_recovery_test.py "$@"

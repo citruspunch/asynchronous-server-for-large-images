@@ -36,6 +36,17 @@ export PATH="/opt/homebrew/opt/vips/bin:$PATH"
 vips --version
 ```
 
+## Optional: mise tasks
+
+`mise.toml` at the repository root is development tooling only. It pins the
+offline-validation toolchain and defines a `mise run <task>` wrapper for
+`build.sh` and every script in `scripts/`; the wrappers with their own argument
+surfaces live as task files under `.mise/tasks/`. `mise tasks` lists them and
+`mise run <task> --help` reaches the wrapped script's own help (the wrappers
+`exec` the scripts unchanged, so argument parsing and validation stay in the
+scripts). Run `mise trust` once per checkout if mise asks before the first task.
+The authoritative build and runtime paths above never depend on mise.
+
 ## Build
 
 ```sh

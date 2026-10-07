@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="UTP/1.0 end-to-end probe against a running server (scripts/e2e_utp.py [--host H] [--port P])"
+#MISE raw_args=true
+exec python3 scripts/e2e_utp.py "$@"

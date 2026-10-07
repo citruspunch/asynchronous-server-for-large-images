@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Import an image with libvips (scripts/import_vips.sh [--data-root <dir>] <src> <id>)"
+#MISE raw_args=true
+exec ./scripts/import_vips.sh "$@"

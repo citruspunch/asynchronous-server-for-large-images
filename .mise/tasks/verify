@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Exhaustively verify published pyramids (scripts/verify_pyramid.py <id>... | --all)"
+#MISE raw_args=true
+exec python3 scripts/verify_pyramid.py "$@"

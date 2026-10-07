@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Raw WebSocket upgrade probe: --expect 101|400 (scripts/ws_handshake_check.py ...)"
+#MISE raw_args=true
+exec python3 scripts/ws_handshake_check.py "$@"
