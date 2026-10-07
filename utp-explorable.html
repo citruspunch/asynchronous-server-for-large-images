@@ -1,0 +1,1048 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UltraTile, interactive technical explainer</title>
+<style>
+:root{
+  --ink:#1d1529; --purple:#6a5cc4; --purple-d:#544aa8; --purple-bg:#ece8f6;
+  --bg:#faf9fb; --card:#f3f1f6; --line:#ddd7e4; --muted:#6f647e;
+  --green:#1f7a66; --green-bg:#ddf3ec; --amber:#8a5f14; --amber-bg:#fdf0d8;
+  --blue:#3d6fb4; --blue-bg:#e2ebf9; --red:#b02e34; --red-bg:#fbe4e5;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  font-size:1.02rem;line-height:1.65}
+h1{font-size:2.5rem;line-height:1.1;letter-spacing:-.03em;margin:0 0 12px}
+h2{font-size:1.6rem;letter-spacing:-.02em;line-height:1.2;margin:0 0 8px}
+h3{font-size:1.05rem;margin:0 0 8px}
+p{margin:0 0 12px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82em;
+  background:var(--card);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+button{font-family:inherit}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--purple);width:0;z-index:40}
+.topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:16px;
+  padding:10px 20px;background:rgba(250,249,251,.94);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px}
+.brand strong{display:block;font-size:.95rem}
+.brand span{display:block;font-size:.72rem;color:var(--muted)}
+.topbar nav{display:flex;gap:2px;margin-left:auto;flex-wrap:wrap}
+.topbar nav a{color:var(--muted);text-decoration:none;font-size:.78rem;padding:6px 9px;border-radius:7px}
+.topbar nav a:hover{background:var(--purple-bg);color:var(--ink)}
+.topbar nav a.on{background:var(--purple-bg);color:var(--purple-d);font-weight:600}
+.btn{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;
+  padding:8px 14px;font-size:.85rem;cursor:pointer}
+.btn:hover{border-color:var(--purple)}
+.btn.pri{background:var(--purple);border-color:var(--purple);color:#fff}
+.btn.pri:hover{background:var(--purple-d)}
+.btn:disabled{opacity:.4;cursor:default}
+.wrap{max-width:1140px;margin:0 auto;padding:0 24px 90px}
+.masthead{padding:56px 0 30px;max-width:840px}
+.kicker{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;
+  color:var(--purple);margin:0 0 10px}
+.lede{font-size:1.08rem;color:var(--muted);max-width:760px}
+.block{padding:48px 0 12px;border-top:1px solid var(--line);margin-top:36px}
+.section-head{max-width:820px;margin-bottom:22px}
+.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}
+.panel+.panel{margin-top:14px}
+.grid-2>.panel+.panel{margin-top:0}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  font-size:.85rem;font-weight:650;margin-bottom:10px;flex-wrap:wrap}
+.panel-head .hint{font-weight:400;color:var(--muted);font-size:.78rem}
+.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.hero-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+canvas{display:block;max-width:100%;height:auto;border-radius:10px;background:#dbe4f0;touch-action:none}
+canvas:focus-visible,.level-row:focus-visible,.byte:focus-visible{outline:2px solid var(--purple);outline-offset:2px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{font-size:.72rem;font-family:ui-monospace,Menlo,monospace;background:var(--card);
+  border:1px solid var(--line);border-radius:999px;padding:3px 10px}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:14px}
+.stat{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.stat .big{display:block;font-size:1.6rem;font-weight:750;letter-spacing:-.02em;color:var(--purple);line-height:1.2}
+.stat span:last-child{font-size:.78rem;color:var(--muted)}
+.caption{font-size:.86rem;color:var(--muted);margin-top:12px;max-width:900px}
+.badge{display:inline-block;font-size:.68rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:.06em;padding:3px 9px;border-radius:5px}
+.badge.c2s{background:var(--purple-bg);color:var(--purple-d)}
+.badge.s2c{background:var(--green-bg);color:var(--green)}
+.badge.live{background:var(--green-bg);color:var(--green)}
+.badge.dead{background:var(--red-bg);color:var(--red)}
+.badge.warnb{background:var(--amber-bg);color:var(--amber)}
+.note{font-size:.82rem;color:var(--muted);border-left:3px solid var(--purple);
+  padding:6px 12px;background:#fff;border-radius:0 8px 8px 0;margin:12px 0}
+.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:6px 0}
+.flow .step{flex:1 1 140px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px}
+.flow .step b{display:block;font-size:.85rem;margin-bottom:4px}
+.flow .step span{font-size:.8rem;color:var(--muted)}
+.flow .arr{align-self:center;color:var(--muted);font-size:1.2rem}
+.flow.pipe{flex-wrap:nowrap;overflow-x:auto;padding:8px 2px 14px;scroll-snap-type:x proximity;scrollbar-width:thin}
+.flow.pipe .step{flex:0 0 242px;scroll-snap-align:start;display:flex;flex-direction:column}
+.flow.pipe .arr{flex:0 0 auto}
+.stage-num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:999px;
+  background:var(--purple-bg);color:var(--purple-d);font-size:.7rem;font-weight:700;margin-bottom:6px}
+.stage-num.end{background:var(--green-bg);color:var(--green)}
+code.nowrap{white-space:nowrap}
+.level-row{display:flex;align-items:center;gap:12px;border:1px solid var(--line);
+  border-radius:10px;background:#fff;padding:10px 12px;margin-bottom:8px;cursor:pointer}
+.level-row:hover{border-color:var(--purple)}
+.level-row.on{border-color:var(--purple);box-shadow:0 0 0 2px var(--purple-bg)}
+.level-row .meta{font-size:.76rem;color:var(--muted)}
+.level-row .zlabel{font-weight:750;font-size:1.1rem;width:36px;color:var(--purple)}
+.minigrid{display:grid;gap:2px;max-width:100%}
+.minigrid i{display:block;width:9px;height:9px;border-radius:2px;background:var(--purple-bg);border:1px solid #c9bde0;flex:none}
+.level-row{min-width:0}
+.level-row .grow{flex:1;min-width:0}
+.level-row.on .minigrid i{background:var(--purple);border-color:var(--purple)}
+.tag{font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;padding:1px 7px;
+  border-radius:4px;background:var(--card);color:var(--muted)}
+.formula{font-family:ui-monospace,Menlo,monospace;font-size:.82rem;background:#fff;
+  border:1px solid var(--line);border-radius:12px;padding:16px;line-height:2}
+.formula b{color:var(--purple)}
+.formula sup{font-size:.68em}
+.padfig{display:flex;gap:14px;align-items:center;margin-top:12px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.padfig p{margin:0;font-size:.86rem;color:var(--muted)}
+.padfig svg{flex:none}
+.table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);
+  border-radius:10px;overflow:hidden;font-size:.85rem}
+.table th{text-align:left;padding:10px 12px;background:var(--card);border-bottom:1px solid var(--line)}
+.table td{padding:9px 12px;border-bottom:1px solid #f0edf3;vertical-align:top}
+.table tr:last-child td{border-bottom:none}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.tabs button{border:1px solid var(--line);background:#fff;border-radius:8px;
+  padding:8px 12px;font-size:.82rem;cursor:pointer;color:var(--muted)}
+.tabs button.on{border-color:var(--purple);color:var(--purple-d);font-weight:650;background:var(--purple-bg)}
+.bytes{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 12px}
+.byte{min-width:34px;height:32px;border-radius:6px;display:inline-flex;align-items:center;
+  justify-content:center;font-family:ui-monospace,Menlo,monospace;font-size:.7rem;
+  border:1px solid var(--line);background:var(--card);cursor:pointer;padding:0 6px}
+.byte.payload{flex:1 1 200px;background:repeating-linear-gradient(135deg,#ece8f6,#ece8f6 6px,#ddd3f0 6px,#ddd3f0 12px);color:var(--muted);cursor:default}
+.byte.hl{outline:2px solid var(--purple);outline-offset:0}
+.hoverrow.hl td{background:var(--purple-bg)}
+.hoverrow{cursor:default}
+.hexline{font-family:ui-monospace,Menlo,monospace;font-size:.74rem;color:var(--muted);word-break:break-all;margin:0 0 12px}
+.row-btns{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.step-label{font-size:.8rem;color:var(--muted);margin-left:auto;font-variant-numeric:tabular-nums}
+.statecard{font-family:ui-monospace,Menlo,monospace;font-size:.8rem;background:#fff;
+  border:1px solid var(--line);border-radius:10px;padding:12px 14px;line-height:1.85}
+.statecard .k{color:var(--muted)}
+.seq-wrap{overflow-x:auto}
+.seq-wrap svg{min-width:760px;display:block;width:100%;height:auto}
+input[type=range]{width:100%;accent-color:var(--purple)}
+select{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:#fff}
+label.ctl{display:grid;gap:4px;font-size:.82rem;color:var(--muted)}
+.ledger{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.ledger .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.ledger .card b{display:block;margin-bottom:4px}
+.ledger .card span{font-size:.85rem;color:var(--muted)}
+.ledger .card .num{display:block;font-size:1.45rem;font-weight:750;color:var(--purple);letter-spacing:-.02em;line-height:1.25;margin-bottom:2px}
+details{border:1px solid var(--line);border-radius:12px;background:#fff;padding:14px 16px;margin-top:12px}
+details summary{cursor:pointer;font-weight:650}
+details.mini{padding:8px 12px;margin-top:10px}
+details.mini .caption{margin-top:8px}
+.kv{display:grid;grid-template-columns:170px minmax(0,1fr);gap:6px 12px;font-size:.88rem;margin:8px 0}
+.kv dt{color:var(--muted)} .kv dd{margin:0}
+.lfuda-table{font-size:.82rem}
+.lfuda-table td.victim{background:var(--red-bg)}
+.lfuda-table td.prot{background:var(--amber-bg)}
+.cache-strip{display:grid;grid-template-columns:repeat(40,minmax(0,1fr));gap:2px;margin:12px 0 4px}
+.cache-strip i{display:block;aspect-ratio:1/1.5;border-radius:2px;background:var(--card);border:1px solid var(--line)}
+.cache-strip i.f1{background:#d9d3ea;border-color:#b5aade}
+.cache-strip i.f2{background:#a89ad6;border-color:var(--purple)}
+.cache-strip i.f3{background:var(--purple);border-color:var(--purple-d)}
+.cache-strip i.pin{background:var(--amber);border-color:var(--amber)}
+.cache-strip i.new{animation:pop .35s ease}
+.cache-strip i.out{animation:out .5s ease}
+@keyframes pop{from{transform:scale(1.4);background:var(--green)}}
+@keyframes out{from{background:var(--red)}}
+.strip-label{display:flex;justify-content:space-between;font-size:.7rem;color:var(--muted)}
+.counters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.counter{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.counter .big{display:block;font-size:1.15rem;font-weight:700;color:var(--purple)}
+.counter span:last-child{font-size:.7rem;color:var(--muted)}
+.stream-dots{display:flex;gap:6px;margin:10px 0}
+.stream-dots i{flex:1;height:8px;border-radius:99px;background:var(--card);border:1px solid var(--line)}
+.stream-dots i.on{background:var(--purple);border-color:var(--purple)}
+.gatepill{font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:999px}
+.gatepill.ok{background:var(--green-bg);color:var(--green)}
+.gatepill.no{background:var(--red-bg);color:var(--red)}
+.pill{font-size:.7rem;border:1px solid var(--line);border-radius:999px;padding:1px 8px;background:var(--card)}
+.stages{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.stages .st{background:#fff;border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:.76rem;font-family:ui-monospace,Menlo,monospace;cursor:pointer}
+.stages .st.hot{background:var(--purple-bg);border-color:var(--purple);color:var(--purple-d);font-weight:700}
+.stages .st:focus-visible{outline:2px solid var(--purple);outline-offset:2px}
+.stages .a{color:var(--muted);font-size:.85rem}
+footer{border-top:1px solid var(--line);margin-top:64px;padding:26px 0 0;font-size:.82rem;color:var(--muted)}
+@media(max-width:980px){.hero-grid,.grid-2,.ledger{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.counters{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){.topbar nav{display:none}h1{font-size:1.9rem}}
+@media print{.topbar,.progress,.no-print{display:none!important}body{background:#fff}.block{break-inside:avoid}
+.flow.pipe{flex-wrap:wrap;overflow:visible}.flow.pipe .step{flex:1 1 200px}.flow.pipe .arr{transform:rotate(90deg)}}
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 72 66" width="26" height="26" aria-hidden="true"><g transform="translate(11,11)"><path d="M29,2.26a4.67,4.67,0,0,0-8,0L14.42,13.53A32.21,32.21,0,0,1,32.17,40.19H27.55A27.68,27.68,0,0,0,12.09,17.47L6,28a15.92,15.92,0,0,1,9.23,12.17H4.62A.76.76,0,0,1,4,39.06l2.94-5a10.74,10.74,0,0,0-3.36-1.9l-2.91,5a4.54,4.54,0,0,0,1.69,6.24A4.66,4.66,0,0,0,4.62,44H19.15a19.4,19.4,0,0,0-8-17.31l2.31-4A23.87,23.87,0,0,1,23.76,44H36.07a35.88,35.88,0,0,0-16.41-31.8l4.67-8a.77.77,0,0,1,1.05-.27c.53.29,20.29,34.77,20.66,35.17a.76.76,0,0,1-.68,1.13H40.6q.09,1.91,0,3.81h4.78A4.59,4.59,0,0,0,50,39.43a4.49,4.49,0,0,0-.62-2.28Z" fill="currentColor"/></g></svg>
+    <div><strong>UltraTile</strong><span>interactive technical explainer, UTP/1.0</span></div>
+  </div>
+  <nav id="nav" aria-label="Sections">
+    <a href="#problem">01 Problem</a><a href="#pyramid">02 Pyramid</a>
+    <a href="#lifecycle">03 UTP</a><a href="#concurrency">04 Server</a>
+    <a href="#pipeline">05 Browser</a><a href="#lfuda">06 Cache</a><a href="#envelope">07 Envelope</a>
+  </nav>
+  <button class="btn no-print" id="printBtn">Print</button>
+</header>
+<main class="wrap">
+
+<header class="masthead">
+  <p class="kicker">Tiled image server, Java 21, custom protocol over WebSocket</p>
+  <h1>The browser never fetches the image.</h1>
+  <p class="lede">A source image can be tens of gigabytes, far too large to transfer or decode as one asset. UltraTile keeps the source on disk as a multiresolution pyramid of 512 by 512 JPEG tiles and sends only the tiles under the current viewport, at a resolution the browser can afford.</p>
+  <p class="lede">Normative wire behavior is defined by <code>docs/protocol/UTP-1.0.md</code>. This page is an explainer, not a specification.</p>
+</header>
+
+<section id="problem" class="block">
+  <div class="section-head">
+    <p class="kicker">01, Problem and system shape</p>
+    <h2>Why the whole image can never be the unit of transfer</h2>
+    <p class="lede">Downloading a multi-gigabyte raster would exhaust bandwidth, delay first paint, and overflow browser memory, mostly for pixels the user never looks at. The system therefore changes the unit of transfer from <em>the image</em> to <em>the visible tiles at a bounded resolution</em>.</p>
+  </div>
+  <div class="flow pipe no-print-keep" role="list" aria-label="System flow, scroll sideways to follow all seven stages">
+    <div class="step" role="listitem"><span class="stage-num">1</span><b>Source image</b><span>Large TIFF on disk. Never served directly and never fully decoded at serve time.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num">2</span><b>Importer</b><span>Demand driven processing into a 512 by 512 JPEG pyramid with padded edges and staged, atomic publication.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num">3</span><b>Pyramid on disk</b><span>Canonical <code class="nowrap">level-Z/X_Y.jpg</code> tree plus <code class="nowrap">meta.json</code> and <code class="nowrap">.ready</code>. The only thing serving reads.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num">4</span><b>Java server</b><span>HTTP bootstrap, then one WebSocket session per page. No HTTP tile route exists. Repeated requests reread tiles from disk. The JVM keeps no tile cache.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num">5</span><b>HTTP bootstrap</b><span>Viewer shell, health and image metadata. Then <code class="nowrap">101 Switching Protocols</code> with subprotocol <code class="nowrap">ultratile.utp.v1</code>.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num">6</span><b>WebSocket plus UTP</b><span>Five small binary messages. The client describes tile rectangles. The server streams tiles center first.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num end">7</span><b>Bounded viewer</b><span>Decode pipeline and a 40 entry decoded bitmap cache. Memory stays flat while the image grows.</span></div>
+  </div>
+  <div class="note">The browser owns the only decoded bitmap cache. Per-session server cost does not grow with image dimensions.</div>
+</section>
+
+<section id="pyramid" class="block">
+  <div class="section-head">
+    <p class="kicker">02, Pyramid and selective viewing</p>
+    <h2>One viewport, a handful of tiles, at a bounded level</h2>
+    <p class="lede">Every level halves the previous one, rounding up. A chunk can only name whole tiles, so this fixed geometry is what makes selective transfer addressable. Drag the viewport and change scale to split the wanted level from the granted level and the union that forced it. <span class="pill">production rule</span></p>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><span>Viewport to desired versus effective level</span><span class="hint">drag to pan, scroll to zoom</span></div>
+    <div class="hero-grid">
+      <div><canvas id="worldCanvas" width="520" height="340" tabindex="0" role="img" aria-label="Overview of the image with the viewport rectangle"></canvas>
+        <p class="caption">Overview. The rectangle is the current viewport mapped into image pixels. <span class="mono" id="genBadge">generation reqId 1</span></p></div>
+      <div><canvas id="viewCanvas" width="520" height="340" tabindex="0" role="img" aria-label="Requested tile grid at the effective level"></canvas>
+        <div class="chips" id="heroChips"></div></div>
+    </div>
+    <div class="grid-2" style="margin-top:12px">
+      <div class="row-btns no-print">
+        <label class="ctl">Image<select id="imgSel">
+          <option value="4096x4096" selected>4096 by 4096 (demo geometry, N=3)</option>
+          <option value="2048x2048">2048 by 2048 (demo geometry, N=2)</option>
+          <option value="40000x30131">40000 by 30131 (real ladder geometry, N=7)</option>
+        </select></label>
+        <label class="ctl" style="flex:1">Scale (log)<input type="range" id="scaleSlider" min="-3" max="1.5" step="0.01" value="-0.6" aria-label="Viewport scale"></label>
+        <button class="btn" id="vpReset">Reset</button>
+      </div>
+      <div class="row-btns no-print">
+        <label class="ctl">Payload assumption<select id="byteAssume">
+          <option value="147456" selected>Photographic median near 147 KB, illustrative</option>
+          <option value="16384">Synthetic gradient near 16 KB, illustrative</option>
+        </select></label>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="big" id="stDesired">-</span><span>desired level (wants)</span></div>
+      <div class="stat"><span class="big" id="stEffective">-</span><span>effective level (gets)</span></div>
+      <div class="stat"><span class="big" id="stUnion">-</span><span>visible union 0 to E (cap 36)</span></div>
+      <div class="stat"><span class="big" id="stTiles">-</span><span>tiles requested at E</span></div>
+    </div>
+    <p class="caption" id="vpCaption"></p>
+    <p class="caption" id="vpBytes"></p>
+  </div>
+  <div class="grid-2" style="margin-top:14px;align-items:start">
+    <div class="panel"><div class="panel-head"><span>Pyramid levels</span><span class="hint">click a level</span></div><div id="levelList"></div></div>
+    <div class="panel"><div class="panel-head"><span>Level math</span><span class="hint">updates with the selected level</span></div>
+      <div class="formula" id="pyrFormula"></div>
+      <div class="padfig">
+      <svg viewBox="0 0 180 140" width="150" height="116" role="img" aria-label="Padded edge tile, content top left, black pad right and bottom"><rect x="10" y="10" width="160" height="120" rx="6" fill="#1d1529"/><rect x="10" y="10" width="112" height="78" fill="#e8e4d8"/><text x="66" y="52" text-anchor="middle" font-size="11" fill="#1d1529" font-family="monospace">content</text><text x="146" y="54" text-anchor="middle" font-size="10" fill="#b5aade" font-family="monospace">pad</text><text x="66" y="112" text-anchor="middle" font-size="10" fill="#b5aade" font-family="monospace">pad</text></svg>
+      <p>Short edge extents are padded with black to a full 512 by 512, content top left. The viewer draws full <code class="nowrap">512·2^(N-z)</code> footprints and clips to <code class="nowrap">[0,W) by [0,H)</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="lifecycle" class="block">
+  <div class="section-head">
+    <p class="kicker">03, UTP request lifecycle</p>
+    <h2>Five messages, one generation</h2>
+    <p class="lede">Three packet types travel up (<span class="badge c2s">client to server</span> chunk, commit, abort) and two travel down (<span class="badge s2c">server to client</span> tile, end). All fields are unsigned big endian. Select a packet to see exactly what crosses the wire, then step a generation. <span class="pill">production rule</span> for layouts and ordering.</p>
+  </div>
+  <div class="tabs no-print" id="packetTabs" role="tablist"></div>
+  <div id="packetPanel"></div>
+  <div class="panel" style="margin-top:14px">
+    <div class="panel-head"><span>Generation stepper, animated sequence</span><span class="hint">play or step manually</span></div>
+    <div class="row-btns no-print">
+      <label class="ctl">Scenario<select id="genScenario">
+        <option value="clean" selected>Clean generation (6 tiles)</option>
+        <option value="supersede">Supersession, gen 7 replaced by gen 8</option>
+        <option value="abort">Abort, client cancels gen 7</option>
+      </select></label>
+      <button class="btn" id="gPrev">Prev</button>
+      <button class="btn pri" id="gPlay">Play</button>
+      <button class="btn" id="gNext">Next</button>
+      <button class="btn" id="gReset">Reset</button>
+      <span class="step-label" id="gLabel"></span>
+    </div>
+    <div class="seq-wrap" id="genSvgWrap"></div>
+    <div class="grid-2" style="margin-top:12px">
+      <div class="statecard" id="genState"></div>
+      <div class="panel" style="margin:0"><h3>Wire total</h3><p class="mono" id="genBytes">0 B</p>
+      <p class="caption">Counts UTP payloads (headers plus JPEG bytes). It excludes WebSocket framing. TILE payload size here is an <em>illustrative example</em>. Real JPEG sizes are content dependent.</p></div>
+    </div>
+  </div>
+  <details><summary>Protocol invariants and failure semantics</summary>
+    <table class="table"><thead><tr><th>Event</th><th>Verdict</th><th>Outcome</th></tr></thead><tbody>
+    <tr><td>Packet at or below <code>lastReqIdSeen</code>, no live match</td><td>Stale</td><td>Ignored, connection survives. History is checked before validation, so a late packet for a removed image is stale, not invalid.</td></tr>
+    <tr><td>ABORT whose pair does not match live generation</td><td>Stale</td><td>Ignored, never advances the watermark.</td></tr>
+    <tr><td>Chunk or COMMIT for a refused reqId</td><td>Invalid</td><td>Close 1002. Refused ids are remembered (cap 64 live, never evicted, a 65th live id closes instead of evicting).</td></tr>
+    <tr><td>Invalid newer CHUNK</td><td>Recorded</td><td>Ignored plus remembered, its COMMIT will then close. A chunk is followed by a commit, so waiting costs nothing.</td></tr>
+    <tr><td>Invalid newer COMMIT</td><td>Invalid</td><td>Close 1002 immediately. Ignoring it would hang the client forever.</td></tr>
+    <tr><td>Structurally valid TILE from a superseded generation (frame boundary race)</td><td>Legal</td><td>Delivered, client discards and counts <code>staleTiles++</code>, socket stays open.</td></tr>
+    <tr><td>Malformed frame (<code>len not equal 24+payloadLen</code>)</td><td>Fatal</td><td>Detected in the parser before accounting, connection fails.</td></tr>
+    <tr><td>END accounting mismatch (<code>sent+skipped</code> and per-key reconciliation)</td><td>Fatal (client)</td><td>Client closes with private use 4002 (browsers cannot send 1002 from script). Server echoes it with no UTP meaning.</td></tr>
+    </tbody></table>
+    <p class="caption">An empty COMMIT is legal. It seals an empty generation and travels the same dispatcher path, answered by <code>END sent=0 skipped=0</code>.</p>
+  </details>
+</section>
+
+<section id="concurrency" class="block">
+  <div class="section-head">
+    <p class="kicker">04, Concurrency and streaming</p>
+    <h2>Two threads per session, zero bytes of tile cache</h2>
+    <p class="lede">The transport uses blocking I/O on Java 21 virtual threads, thread per session programming, not selector based nonblocking I/O. Tile bytes stream from <code>FileChannel</code> to the socket with no large intermediate copy, and per-session cost does not scale with image dimensions.</p>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><span>Session shape (one WebSocket)</span><span><span class="badge c2s">reader virtual thread</span> <span class="badge s2c">dispatcher virtual thread</span></span></div>
+    <div class="flow">
+      <div class="step"><b>Socket read</b><span>Reader thread blocks on read, parses frames (1 KiB inbound cap) and validates UTP. Owns requested set until seal.</span></div><div class="arr">→</div>
+      <div class="step"><b>Sealed generation</b><span>Immutable center first work list published at seal. One coalesced ready slot holds the newest sealed generation, so bursts collapse instead of forming a FIFO queue.</span></div><div class="arr">→</div>
+      <div class="step"><b>Dispatcher</b><span>One thread per session, parked on a permit. Owns sent and skipped counts and the drain index.</span></div><div class="arr">→</div>
+      <div class="step"><b>Serialized writer</b><span>One <code>ReentrantLock</code> (pinning aware, not a monitor). Final admission is rechecked inside the lock before the first byte.</span></div><div class="arr">→</div>
+      <div class="step"><b>File to socket</b><span>Positional <code>transferTo</code> loop, 64 KiB positional fallback after repeated zero progress. Frame declares <code>24 + fileSize</code> up front.</span></div>
+    </div>
+    <div class="row-btns no-print"><label class="ctl" style="flex:1">Concurrent sessions, <span id="sessN">3</span><input type="range" id="sessRange" min="1" max="10" step="1" value="3" aria-label="Concurrent sessions"></label>
+    <button class="btn pri" id="tileStep">Step one tile through the stream</button>
+    <button class="btn" id="tileReset">Reset stream</button></div>
+    <div class="stream-dots" id="streamDots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <p class="mono" id="sessOut"></p>
+    <p class="mono" id="streamOut" aria-live="polite"></p>
+    <div class="note">Repeated requests reread tiles from disk. The JVM does not maintain a tile cache. Server memory per in-flight tile is a 24 byte header plus a 64 KiB fallback buffer only on the zero progress path. Per session it is two virtual thread stacks, a 1 KiB or smaller reassembly buffer, and 256 or fewer packed keys and work records.</div>
+    <div class="note">The transport could be replaced without redesigning UTP. Tile store, packets, session rules, and viewer would be unchanged.</div>
+  </div>
+</section>
+
+<section id="pipeline" class="block">
+  <div class="section-head">
+    <p class="kicker">05, Browser resource pipeline</p>
+    <h2>Backpressure before memory</h2>
+    <p class="lede">Tiles move from needed to cached through a bounded pipeline. The viewer sends a batch only with decode headroom, sized from observed tile sizes.</p>
+  </div>
+  <div class="stages" aria-label="Ownership pipeline, select a stage for detail">
+    <button class="st" data-stage="needed">needed</button><span class="a" aria-hidden="true">→</span><button class="st" data-stage="pending">pending</button><span class="a" aria-hidden="true">→</span><button class="st" data-stage="received">received</button><span class="a" aria-hidden="true">→</span><button class="st" data-stage="decode">decode queue</button><span class="a" aria-hidden="true">→</span><button class="st hot" data-stage="cached">cached (40 max)</button>
+  </div>
+  <p class="caption" id="stageInfo" aria-live="polite" style="margin-top:0">Cached: decoded bitmaps under LFUDA-40, with viewport and z equal 0 protection.</p>
+  <div class="grid-2">
+    <div class="panel"><div class="panel-head"><span>Batch budget calculator</span><span class="pill">production rule</span></div>
+      <label class="ctl">Free decode jobs (0 to 24)<input type="range" id="bJobs" min="0" max="24" value="18"></label>
+      <label class="ctl">Free queue bytes (MiB)<input type="range" id="bBytes" min="0" max="4" step="0.1" value="3"></label>
+      <label class="ctl">Observed mean tile size avgTileBytes (KB)<input type="range" id="bAvg" min="16" max="512" value="147"></label>
+      <p class="mono" id="bOut"></p>
+      <p><span class="gatepill ok" id="gatePill">headroom OK</span></p>
+      <p class="caption" style="margin-top:0"><code>rxBytes</code> counts payload on the wire. <code>decodedBytes</code> counts payload admitted. <code>covCov</code> only observes, never gates.</p>
+      <details class="mini"><summary>Formula and headroom rule</summary>
+      <p class="caption"><code>planTileBytes = max(avgTileBytes, 64 KiB floor)</code>. <code>budget = min(30, freeJobs, max(1, floor(freeBytes / planTileBytes)))</code>. The floor tames tiny synthetic tiles. Headroom needs in flight below 6, queued below 24, free bytes at least 2 MiB.</p>
+      </details>
+    </div>
+    <div class="panel"><div class="panel-head"><span>Ownership and suppression</span></div>
+      <dl class="kv">
+      <dt>pending</dt><dd><code>Map(key to reqId)</code>. Dropped the moment its tile arrives.</dd>
+      <dt>suppressed</dt><dd>cached, pending, queued, in flight, <code>terminalFailed</code>, <code>serverSkippedThisEpoch</code>. Never re-requested in the same epoch.</dd>
+      <dt>overflow</dt><dd>Full queue parks the tile in <code>retryNeeded</code> for later this epoch.</dd>
+      <dt>terminal</dt><dd>Bad payload or format parks the tile in <code>terminalFailed</code> for the epoch.</dd>
+      <dt>skipped</dt><dd>Keys missing at END land in <code>serverSkippedThisEpoch</code>.</dd>
+      <dt>cleanup</dt><dd>Each epoch bump clears foreign pending, epoch sets, and queued decodes.</dd>
+      </dl>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:16px"><h3>Scalable import, briefly</h3>
+    <p style="font-size:.92rem">libvips reads image regions, never the whole raster, then publishes pyramid, padding, <code>meta.json</code> plus <code>.ready</code> by atomic rename. The Java <code>ImageIO</code> fallback decodes the whole image, so it is capped at 8192 px and 16 MP.</p>
+  </div>
+</section>
+
+<section id="lfuda" class="block">
+  <div class="section-head">
+    <p class="kicker">06, The decoded bitmap cache, LFUDA-40</p>
+    <h2>Frequency with aging, not recency</h2>
+    <p class="lede">Capacity is 40 decoded bitmaps. Each entry carries a <em>frequency</em> and a <em>priority equal to age plus frequency</em>. A global <em>age</em> watermark rises as evictions happen. The sweep below runs the shipped replacement rule at full capacity. The guided trace beside it slows the same rule down to 4 slots. <span class="pill">production rule</span> in the sweep, <span class="pill">conceptual model</span> capacity in the trace.</p>
+  </div>
+  <div class="grid-2" style="align-items:start">
+    <div class="panel">
+      <div class="panel-head"><span>Live sweep, LFUDA-40 on an 8 by 8 grid</span><span class="badge c2s" id="cacheState">idle</span></div>
+      <canvas id="cacheCanvas" width="330" height="330" role="img" aria-label="Cache map with viewport window"></canvas>
+      <div class="cache-strip" id="cacheStrip" aria-hidden="true"></div>
+      <div class="strip-label"><span>admission order, color deepens with priority, amber is pinned</span><span>40 slots</span></div>
+      <div class="row-btns no-print" style="margin-top:12px">
+        <button class="btn pri" id="cachePlay">Play</button>
+        <button class="btn" id="cacheStep">Step</button>
+        <button class="btn" id="cacheReset">Reset</button>
+        <button class="btn" id="cacheSpeed">Speed 1x</button>
+      </div>
+      <div class="counters" style="margin-top:4px">
+        <div class="counter"><span class="big" id="cRequests">0</span><span>epochs requested</span></div>
+        <div class="counter"><span class="big" id="cReceived">0</span><span>tiles received</span></div>
+        <div class="counter"><span class="big" id="cEvict">0</span><span>evictions</span></div>
+        <div class="counter"><span class="big" id="cBytes">0 B</span><span>payload, illustrative</span></div>
+        <div class="counter"><span class="big" id="cCover">0%</span><span>distinct tiles seen</span></div>
+        <div class="counter"><span class="big" id="cCache">1 / 40</span><span>cache fill and age <span id="cAge">0</span></span></div>
+      </div>
+      <p class="caption">A 4 by 3 window sweeps in serpentine order. Byte totals use the illustrative assumption. Counts and ages are exact.</p>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><span>Guided trace, same rule at capacity 4</span><span class="hint">press Next to advance</span></div>
+      <div class="row-btns no-print">
+        <button class="btn pri" id="lfNext">Next step</button>
+        <button class="btn" id="lfReset">Reset</button>
+        <span class="step-label" id="lfLabel"></span>
+      </div>
+      <p class="mono" id="lfNarr" aria-live="polite"></p>
+      <table class="table lfuda-table"><thead><tr><th>Tile</th><th>freq</th><th>priority</th><th>protected or pinned</th><th>admission</th></tr></thead><tbody id="lfBody"></tbody></table>
+      <p class="mono" id="lfAge"></p>
+      <div class="note" id="lfWhy"></div>
+      <dl class="kv">
+        <dt>insertion</dt><dd><code>frequency 1</code>, <code>priority age plus 1</code>, stamped admission order. Admission is that epoch reference, so it is not counted twice.</dd>
+        <dt>reference</dt><dd>At most one per viewport epoch, tracked by <code>lastCountedEpoch</code>. Rendering uses <code>peek()</code> and never raises frequency.</dd>
+        <dt>victim</dt><dd>Lowest priority among <em>eligible</em> entries. Ties break by oldest admission. Recency is never stored or consulted.</dd>
+        <dt>aging</dt><dd><code>age is max(age, victim.priority)</code>. The <code>max</code> keeps a monotonic watermark under viewport protection. With no protection the victim is the global minimum and the rule is textbook LFUDA.</dd>
+        <dt>protection</dt><dd>Current viewport target and the <code>z equal 0</code> overview pin decide <em>who may be evicted</em>. LFUDA decides <em>who loses</em>. Fallback tiers yield target protection, then pinning, rather than exceeding capacity. The just admitted tile is excluded from its own eviction.</dd>
+        <dt>eviction</dt><dd>Victim bitmap is explicitly <code>close()</code>d exactly once.</dd>
+      </dl>
+      <div class="note">Naive LFU pins historically popular tiles forever, so one hot region blocks the region in view. Aging bleeds old popularity off. A hot tile never referenced again is eventually displaced. LRU would let redraws dominate. Frequency across viewport epochs measures useful reuse instead.</div>
+    </div>
+  </div>
+</section>
+
+<section id="envelope" class="block">
+  <div class="section-head">
+    <p class="kicker">07, Resource envelope and design boundaries</p>
+    <h2>Separate ledgers, separate owners</h2>
+    <p class="lede">These numbers share a unit but not an owner. They are never summed.</p>
+  </div>
+  <div class="ledger">
+    <div class="card"><span class="num">36 / 30 / 256</span><b>Network per viewport, batch, generation</b><span>Tile counts are bounded. Byte sizes are content dependent, never protocol values.</span></div>
+    <div class="card"><span class="num">Flat</span><b>Server memory per session</b><span>Two threads, 1 KiB buffer, 256 keys max. Nothing scales with image size.</span></div>
+    <div class="card"><span class="num">40 MiB</span><b>Browser retained bitmaps</b><span>40 entries at 512 by 512 by 4 bytes. Same for any image size.</span></div>
+    <div class="card"><span class="num">60 MiB</span><b>Browser transient, adversarial bound</b><span>Socket buffering outside application control. Real traffic runs far lower.</span></div>
+    <div class="card"><span class="num">Working set</span><b>Import memory, not raster</b><span>libvips streams regions. ImageIO fallback is capped at 8192 px and 16 MP.</span></div>
+    <div class="card"><span class="num">Disk</span><b>The only thing that scales</b><span>Measure free space. Never multiply source size.</span></div>
+  </div>
+  <div class="panel" style="margin-top:14px"><div class="panel-head"><span>Limits that explain decisions</span><span class="hint">category matters more than value</span></div>
+  <table class="table"><thead><tr><th>Limit</th><th>Value</th><th>Kind</th><th>Reason</th></tr></thead><tbody>
+    <tr><td>Tile size</td><td>512 by 512, padded</td><td>wire</td><td>Fixed addressable unit.</td></tr>
+    <tr><td>Representability</td><td>33,554,432 px per axis</td><td>wire, derived</td><td>Past this, a finest tile could not be named.</td></tr>
+    <tr><td>Chunk span, generation set</td><td>128 per axis, 256 unique</td><td>wire</td><td>Bounds per packet validation work.</td></tr>
+    <tr><td>Tile payload, inbound message</td><td>2 MiB, 1 KiB</td><td>wire</td><td>Adversarial bounds.</td></tr>
+    <tr><td>reqId, imageId</td><td>1 to 0xFFFFFFFE, 0 to 65535</td><td>wire</td><td>Socket continuity across switches.</td></tr>
+    <tr><td>LOD, format</td><td>mode 0, JPEG 1</td><td>wire</td><td>Reserved values rejected.</td></tr>
+    <tr><td>Import tile cap</td><td>2 to the 24th tiles</td><td>operational</td><td>Bounds build work, never serving.</td></tr>
+    <tr><td>Union cap</td><td>36 tiles</td><td>viewer</td><td>Below cache capacity, one viewport never overflows it.</td></tr>
+    <tr><td>Decode, queue, batch</td><td>6, 24 plus 4 MiB, 30</td><td>viewer</td><td>Backpressure.</td></tr>
+    <tr><td>Cache</td><td>40 bitmaps, LFUDA</td><td>viewer</td><td>Bounded working set.</td></tr>
+  </tbody></table></div>
+  <details><summary>Technical references</summary>
+    <p class="caption">RFC 6455 (WebSocket). RFC 9110 and 9112 (HTTP subset). JEP 444 (virtual threads). libvips <code>dzsave</code> (pyramids). <code>FileChannel.transferTo</code> (streaming). <code>ImageReader</code> (header before decode).</p>
+  </details>
+</section>
+
+<footer>
+  <p>UltraTile, interactive explainer. Normative wire and application semantics, <code>docs/protocol/UTP-1.0.md</code>. As built behavior, <code>docs/implementation/</code>. This page works offline with no external assets.</p>
+</footer>
+</main>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const nf=n=>Math.round(n).toLocaleString("en-US");
+function fmtBytes(n){if(n>=1e9)return(n/1e9).toFixed(2)+" GB";if(n>=1e6)return(n/1e6).toFixed(1)+" MB";if(n>=1e3)return Math.round(n/1e3)+" KB";return n+" B";}
+function hex(buf){return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0").toUpperCase()).join(" ");}
+function setupCanvas(c,w,h){const d=Math.min(2,window.devicePixelRatio||1);c.width=w*d;c.height=h*d;const x=c.getContext("2d");x.setTransform(d,0,0,d,0,0);return x;}
+function rng(seed){let s=seed>>>0;return()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296;};}
+const TILE=512, UNION_CAP=36, SCALE_MIN=1e-3, SCALE_MAX=32, TILE_EX=147456;
+function maxLevelFor(W,H){return Math.max(0,Math.ceil(Math.log2(Math.max(W,H)/TILE)));}
+function levelDims(W,H,N,Z){const d=Math.pow(2,N-Z);return{w:Math.max(1,Math.ceil(W/d)),h:Math.max(1,Math.ceil(H/d))};}
+function gridFor(W,H,N,Z){const lh=levelDims(W,H,N,Z);return{cols:Math.ceil(lh.w/TILE),rows:Math.ceil(lh.h/TILE),w:lh.w,h:lh.h};}
+function selectLevel(s,W,H){const N=maxLevelFor(W,H);const zF=clamp(N+Math.log2(s),0,N);return clamp(Math.floor(zF+0.5),0,N);}
+function visRange(Z,W,H,N,cam,vw){
+  const x0w=cam.x-vw.w/(2*cam.s),x1w=cam.x+vw.w/(2*cam.s),y0w=cam.y-vw.h/(2*cam.s),y1w=cam.y+vw.h/(2*cam.s);
+  const ix0=Math.max(0,x0w),ix1=Math.min(W,x1w),iy0=Math.max(0,y0w),iy1=Math.min(H,y1w);
+  if(!(ix0<ix1&&iy0<iy1))return{empty:true,keys:[]};
+  const k=Math.pow(2,Z-N),gr=gridFor(W,H,N,Z),C=gr.cols,R=gr.rows;
+  const tx0=Math.max(0,Math.floor(ix0*k/TILE)),tx1=Math.min(C-1,Math.ceil(ix1*k/TILE)-1);
+  const ty0=Math.max(0,Math.floor(iy0*k/TILE)),ty1=Math.min(R-1,Math.ceil(iy1*k/TILE)-1);
+  if(tx0>tx1||ty0>ty1)return{empty:true,keys:[]};
+  const keys=[];for(let y=ty0;y<=ty1;y++)for(let x=tx0;x<=tx1;x++)keys.push({x,y});
+  return{empty:false,keys,bbox:{tx0,tx1,ty0,ty1},C,R};
+}
+function effectiveLOD(desired,W,H,N,cam,vw){
+  const d=clamp(desired|0,0,N);
+  for(let E=d;E>=0;E--){const u=new Set();
+    for(let Z=0;Z<=E;Z++){const vr=visRange(Z,W,H,N,cam,vw);for(const t of vr.keys)u.add(Z+":"+t.x+":"+t.y);}
+    if(u.size<=UNION_CAP)return{desired:d,effective:E,downgraded:E<d,union:u.size};}
+  return{desired:d,effective:0,downgraded:d>0,union:0};
+}
+function totalTiles(W,H){const N=maxLevelFor(W,H);let t=0;for(let z=0;z<=N;z++){const g=gridFor(W,H,N,z);t+=g.cols*g.rows;}return{t,N};}
+class Lfuda{
+  constructor(cap){this.cap=cap;this.map=new Map();this.pinned=new Set();this.target=new Set();this.age=0;this.seq=0;this.evicts=0;this.closed=0;this.hits=0;this.misses=0;this.lastVictim=null;}
+  insert(k,opts){opts=opts||{};const prev=this.map.get(k);if(prev!==undefined){this.map.delete(k);this.closed++;}
+    const e={freq:1,prio:this.age+1,seq:++this.seq,epoch:(opts.epoch===undefined?-1:opts.epoch)};
+    this.map.set(k,e);if(opts.pin)this.pinned.add(k);this.down(k);return e;}
+  mark(k,ep){const e=this.map.get(k);if(e===undefined){this.misses++;return false;}this.hits++;
+    if(e.epoch===ep)return true;e.epoch=ep;e.freq++;e.prio=this.age+e.freq;return true;}
+  peek(k){return this.map.get(k);}
+  has(k){return this.map.has(k);}
+  tiers(ad){return[k=>k!==ad&&!this.pinned.has(k)&&!this.target.has(k),k=>k!==ad&&!this.pinned.has(k),k=>k!==ad];}
+  victim(ad){const ts=this.tiers(ad);for(const f of ts){let best=null;
+    for(const ent of this.map){const k=ent[0],e=ent[1];
+      if(f(k)&&(best===null||e.prio<best.e.prio||(e.prio===best.e.prio&&e.seq<best.e.seq)))best={k,e};}
+    if(best!==null)return best;}const o=this.map.get(ad);return o===undefined?null:{k:ad,e:o};}
+  down(ad){while(this.map.size>this.cap){const v=this.victim(ad);if(v===null)break;
+    this.age=Math.max(this.age,v.e.prio);this.map.delete(v.k);this.pinned.delete(v.k);this.target.delete(v.k);
+    this.evicts++;this.closed++;this.lastVictim=v.k;}}
+  clear(){for(const ent of this.map){const e=ent[1];if(e.bitmap&&typeof e.bitmap.close==="function"){try{e.bitmap.close();}catch(err){}}}
+    this.map.clear();this.pinned.clear();this.target.clear();this.age=0;}
+}
+
+/* viewport demo with rich terrain */
+(function(){
+  const VW={w:960,h:600};
+  const wc=$("worldCanvas"),vc=$("viewCanvas");
+  const wx=setupCanvas(wc,520,340),vx=setupCanvas(vc,520,340);
+  let W=4096,H=4096,N=maxLevelFor(W,H),gen=1;
+  let cam={x:W/2,y:H/2,s:Math.min(VW.w/W,VW.h/H)};
+  const world=(()=>{const r=rng(20260922),cs=[];
+    for(let i=0;i<6;i++){const blobs=[],n=5+Math.floor(r()*5);
+      for(let j=0;j<n;j++)blobs.push({dx:(r()-0.5)*30000,dy:(r()-0.5)*20000,r:3500+r()*9000});
+      cs.push({cx:30000+r()*(262144-60000),cy:20000+r()*(163840-40000),blobs,lakes:[]});}
+    for(let k=0;k<7;k++){const c=cs[k%cs.length];c.lakes.push({dx:(r()-0.5)*9000,dy:(r()-0.5)*7000,r:1200+r()*2600});}
+    return cs;})();
+  function fitScale(){return clamp(Math.min(VW.w/W,VW.h/H),SCALE_MIN,SCALE_MAX);}
+  function clampCam(){const vw=VW.w/cam.s,vh=VW.h/cam.s;
+    cam.x=vw>=W?W/2:clamp(cam.x,vw/2,W-vw/2);cam.y=vh>=H?H/2:clamp(cam.y,vh/2,H-vh/2);
+    cam.s=clamp(cam.s,SCALE_MIN,SCALE_MAX);}
+  function pow2(minW){let s=64;while(s<minW)s*=2;return s;}
+  function paint(ctx,wl,wt,f,CW,CH){
+    ctx.fillStyle="#dbe4f0";ctx.fillRect(0,0,CW,CH);
+    for(const c of world){
+      const px=(c.cx*W/262144-wl)*f,py=(c.cy*H/163840-wt)*f;
+      const rr=c.blobs.reduce((m,b)=>Math.max(m,Math.hypot(b.dx,b.dy)+b.r),0)*f*W/262144;
+      if(px+rr<-20||py+rr<-20||px-rr>CW+20||py-rr>CH+20)continue;
+      ctx.fillStyle="#c9c1ae";
+      for(const b of c.blobs){ctx.beginPath();ctx.arc(px+b.dx*f*W/262144,py+b.dy*f*H/163840,(b.r+900)*f*W/262144,0,Math.PI*2);ctx.fill();}
+      ctx.fillStyle="#e8e4d8";
+      for(const b of c.blobs){ctx.beginPath();ctx.arc(px+b.dx*f*W/262144,py+b.dy*f*H/163840,b.r*f*W/262144,0,Math.PI*2);ctx.fill();}
+      ctx.fillStyle="#c3d4e6";
+      for(const l of c.lakes){ctx.beginPath();ctx.arc(px+l.dx*f*W/262144,py+l.dy*f*H/163840,l.r*f*W/262144,0,Math.PI*2);ctx.fill();}}
+    const sp=pow2(Math.max(24,56/Math.max(f,1e-9)));
+    ctx.strokeStyle="rgba(28,16,40,0.10)";ctx.lineWidth=1;
+    const gx0=Math.floor(wl/sp)*sp;
+    for(let gx=gx0;gx<wl+CW/f;gx+=sp){const px=(gx-wl)*f;ctx.beginPath();ctx.moveTo(px,0);ctx.lineTo(px,CH);ctx.stroke();}
+    const gy0=Math.floor(wt/sp)*sp;
+    for(let gy=gy0;gy<wt+CH/f;gy+=sp){const py=(gy-wt)*f;ctx.beginPath();ctx.moveTo(0,py);ctx.lineTo(CW,py);ctx.stroke();}}
+  function drawWorld(){
+    const f=Math.min(520/W,340/H),ox=(520-W*f)/2,oy=(340-H*f)/2;
+    paint(wx,0,0,f,520,340);
+    wx.fillStyle="rgba(232,228,216,0)";wx.fillRect(ox,oy,W*f,H*f);
+    wx.strokeStyle="rgba(29,21,41,.35)";wx.strokeRect(ox+.5,oy+.5,W*f-1,H*f-1);
+    const vw=VW.w/cam.s,vh=VW.h/cam.s;
+    const rx=ox+(cam.x-vw/2)*f,ry=oy+(cam.y-vh/2)*f;
+    wx.fillStyle="rgba(106,92,196,.25)";wx.fillRect(rx,ry,vw*f,vh*f);
+    wx.strokeStyle="#6a5cc4";wx.lineWidth=2;wx.strokeRect(rx,ry,vw*f,vh*f);
+    wx._map={f,ox,oy};
+  }
+  function drawDetail(lod){
+    const E=lod.effective,g=gridFor(W,H,N,E),v=visRange(E,W,H,N,cam,VW);
+    const factor=cam.s*520/VW.w;
+    paint(vx,cam.x-VW.w/cam.s/2,cam.y-VW.h/cam.s/2,factor,520,340);
+    const cw=520/g.cols,ch=340/g.rows;
+    vx.fillStyle="rgba(219,228,240,.0)";
+    for(let y=0;y<g.rows;y++)for(let x=0;x<g.cols;x++){
+      vx.fillStyle=(x+y)%2?"rgba(230,225,240,.55)":"rgba(217,211,234,.55)";
+      vx.fillRect(x*cw+1,y*ch+1,cw-2,ch-2);}
+    if(!v.empty){for(const t of v.keys){
+      vx.fillStyle="rgba(106,92,196,.5)";vx.fillRect(t.x*cw,t.y*ch,cw,ch);
+      vx.strokeStyle="#544aa8";vx.lineWidth=2;vx.strokeRect(t.x*cw+1,t.y*ch+1,cw-2,ch-2);}
+      vx.fillStyle="#1d1529";vx.font="600 12px ui-monospace,monospace";vx.textAlign="center";
+      for(const t of v.keys){if(cw>46)vx.fillText("Z"+E+" "+t.x+","+t.y,t.x*cw+cw/2,t.y*ch+ch/2);}}
+    vx.fillStyle="#4a4356";vx.font="11px system-ui";vx.textAlign="left";
+    vx.fillText("level Z"+E+" grid "+g.cols+" by "+g.rows+", footprint "+(512*Math.pow(2,N-E))+" px",8,322);
+  }
+  function stats(){
+    const desired=selectLevel(cam.s,W,H),lod=effectiveLOD(desired,W,H,N,cam,VW);
+    const v=visRange(lod.effective,W,H,N,cam,VW),count=v.empty?0:v.keys.length;
+    const per=parseInt($("byteAssume").value,10);
+    const tt=totalTiles(W,H),tot=tt.t;
+    $("stDesired").textContent="Z"+lod.desired;$("stEffective").textContent="Z"+lod.effective;
+    $("stUnion").textContent=lod.union+" / 36"+(lod.downgraded?" downgraded":" fits");
+    $("stTiles").textContent=nf(count);
+    $("vpCaption").textContent="Image "+W+" by "+H+" (N="+N+"). Scale "+cam.s.toFixed(3)+" gives desired Z"+lod.desired+
+      (lod.downgraded?(", but the union past 36 across 0 to "+lod.desired+" forces Z"+lod.effective+" (union "+lod.union+"). Coarser pixels arrive sooner and the cache stays bounded.")
+      :(" fits within the 36 tile union at Z"+lod.effective+"."));
+    $("vpBytes").textContent="Illustrative transfer for this view. "+count+" tiles by "+fmtBytes(per)+
+      " is about "+fmtBytes(count*per)+" ("+nf(count)+" of "+nf(tot)+" tiles by count). Assumption above, JPEG sizes are content dependent.";
+    const chips=(v.empty?[]:v.keys).slice(0,10).map(t=>"Z"+lod.effective+" "+t.x+","+t.y);
+    if(count>10)chips.push("+"+(count-10)+" more");
+    $("heroChips").innerHTML=chips.map(c=>"<span class=\"chip\">"+c+"</span>").join("");
+    $("genBadge").textContent="generation reqId "+gen;
+    drawDetail(lod);
+  }
+  let raf=null,genTimer=null;
+  function render(){if(raf)return;raf=requestAnimationFrame(()=>{raf=null;clampCam();drawWorld();stats();});}
+  function bumpGen(){clearTimeout(genTimer);genTimer=setTimeout(()=>{gen++;stats();},220);}
+  function bindDrag(cv,mode){
+    let dragging=false,last=null;
+    cv.addEventListener("pointerdown",e=>{dragging=true;const r=cv.getBoundingClientRect();
+      last={x:(e.clientX-r.left)*(520/r.width),y:(e.clientY-r.top)*(340/r.height)};
+      cv.setPointerCapture(e.pointerId);cv.style.cursor="grabbing";});
+    cv.addEventListener("pointermove",e=>{if(!dragging)return;const r=cv.getBoundingClientRect();
+      const p={x:(e.clientX-r.left)*(520/r.width),y:(e.clientY-r.top)*(340/r.height)};
+      const dx=p.x-last.x,dy=p.y-last.y;last=p;
+      if(mode==="world"){const m=wx._map||{f:520/W};cam.x+=dx/m.f;cam.y+=dy/m.f;}
+      else{const f=cam.s*520/VW.w;cam.x-=dx/f;cam.y-=dy/f;}
+      render();});
+    const done=()=>{if(!dragging)return;dragging=false;cv.style.cursor="grab";bumpGen();};
+    cv.addEventListener("pointerup",done);cv.addEventListener("pointercancel",done);
+    cv.addEventListener("wheel",e=>{e.preventDefault();
+      const before=cam.s;cam.s=clamp(cam.s*Math.exp(-e.deltaY*0.0012),SCALE_MIN,SCALE_MAX);
+      if(mode==="view"&&cam.s!==before){const r=cv.getBoundingClientRect();
+        const p={x:(e.clientX-r.left)*(520/r.width),y:(e.clientY-r.top)*(340/r.height)};
+        const f0=before*520/VW.w;
+        const wxp=cam.x-VW.w/before/2+p.x/f0,wyp=cam.y-VW.h/before/2+p.y/f0;
+        const f1=cam.s*520/VW.w;
+        cam.x=wxp+VW.w/cam.s/2-p.x/f1;cam.y=wyp+VW.h/cam.s/2-p.y/f1;}
+      render();bumpGen();},{passive:false});
+  }
+  bindDrag(wc,"world");bindDrag(vc,"view");
+  wc.style.cursor="grab";vc.style.cursor="grab";
+  function syncSlider(){$("scaleSlider").value=Math.log10(cam.s);}
+  $("scaleSlider").addEventListener("input",e=>{cam.s=Math.pow(10,parseFloat(e.target.value));render();bumpGen();});
+  $("imgSel").addEventListener("change",e=>{const parts=e.target.value.split("x"),w=+parts[0],h=+parts[1];
+    W=w;H=h;N=maxLevelFor(W,H);cam={x:W/2,y:H/2,s:fitScale()};gen++;syncSlider();renderList();render();});
+  $("byteAssume").addEventListener("change",render);
+  $("vpReset").addEventListener("click",()=>{cam={x:W/2,y:H/2,s:fitScale()};gen++;syncSlider();render();});
+  let selLevel=null;
+  function renderList(){
+    let html="";
+    for(let z=N;z>=0;z--){const g=gridFor(W,H,N,z),tiles=g.cols*g.rows;
+      const tag=z===N?"native":(z===0?"overview":"preview");
+      const px=g.cols>24?Math.max(2,Math.floor(200/g.cols)):9;
+      let grid="";for(let i=0;i<tiles;i++)grid+="<i style=\"width:"+px+"px;height:"+px+"px\"></i>";
+      html+="<div class=\"level-row"+(selLevel===z?" on":"")+"\" data-z=\""+z+"\" tabindex=\"0\" role=\"button\" aria-label=\"Level "+z+", "+g.cols+" by "+g.rows+" tiles\">"
+        +"<span class=\"zlabel\">Z"+z+"</span>"
+        +"<div class=\"minigrid\" style=\"grid-template-columns:repeat("+g.cols+","+px+"px)\" aria-hidden=\"true\">"+grid+"</div>"
+        +"<div class=\"grow\"><div><span class=\"tag\">"+tag+"</span></div>"
+        +"<div class=\"meta\">"+nf(g.w)+" by "+nf(g.h)+" px, "+g.cols+" by "+g.rows+" tiles, "+tiles+" on disk</div></div></div>";}
+    $("levelList").innerHTML=html;
+    const rows=document.querySelectorAll(".level-row");
+    rows.forEach(r=>{const go=()=>{selLevel=parseInt(r.dataset.z,10);renderList();renderFormula();};
+      r.addEventListener("click",go);
+      r.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go();}});});
+    if(selLevel===null||selLevel>N)selLevel=N;
+    renderFormula();
+  }
+  function renderFormula(){
+    const g=gridFor(W,H,N,selLevel),tt=totalTiles(W,H);
+    $("pyrFormula").innerHTML="N = max(0, ceil(log2(max("+W+", "+H+")/512))) = <b>"+N+"</b><br>"
+      +"W_"+selLevel+" = max(1, ceil("+W+" / 2<sup>"+(N-selLevel)+"</sup>)) = <b>"+g.w+"</b><br>"
+      +"H_"+selLevel+" = max(1, ceil("+H+" / 2<sup>"+(N-selLevel)+"</sup>)) = <b>"+g.h+"</b><br>"
+      +"C_"+selLevel+" = ceil("+g.w+"/512) = <b>"+g.cols+"</b>, R_"+selLevel+" = ceil("+g.h+"/512) = <b>"+g.rows+"</b><br>"
+      +"pyramid total = <b>"+nf(tt.t)+"</b> tiles";
+  }
+  syncSlider();renderList();render();
+})();
+
+/* packet explorer */
+(function(){
+  const PAL=["#ece8f6","#ddf3ec","#fdf0d8","#fbe4e5","#e2ebf9","#efe8fa","#e7f3dd","#f9e3ef","#e3eff4","#f2ecd8"];
+  const PK=[
+   {code:1,name:"Viewport chunk",dir:"c2s",size:28,header:"The client asks for one tile rectangle.",
+    fields:[["magic",0,1,"u8",170,"Fixed 0xAA"],["type",1,1,"u8",1,"Type 0x01"],["imageId",2,2,"u16",1,"Known image"],["zoom",4,1,"u8",3,"Level Z, 0 to N"],["lodMode",5,1,"u8",0,"MUST be 0, 1 and 2 reserved, rejected"],["tileSize",6,2,"u16",512,"MUST be 512"],["reqId",8,4,"u32",7,"Generation 1 to 0xFFFFFFFE"],["minX",12,4,"u32",2,"Inclusive left"],["maxX",16,4,"u32",5,"Inclusive right"],["minY",20,4,"u32",1,"Inclusive top"],["maxY",24,4,"u32",1,"Inclusive bottom"]],
+    notes:"Span is at most 128 per axis. The unique set holds at most 256 tiles and counts a duplicate send once. The receiver validates a chunk before it supersedes anything.",
+    enc:v=>{const b=new ArrayBuffer(28),d=new DataView(b);d.setUint8(0,170);d.setUint8(1,1);d.setUint16(2,v.imageId);d.setUint8(4,v.zoom);d.setUint8(5,v.lodMode);d.setUint16(6,v.tileSize);d.setUint32(8,v.reqId);d.setUint32(12,v.minX);d.setUint32(16,v.maxX);d.setUint32(20,v.minY);d.setUint32(24,v.maxY);return b;},
+    values:{imageId:1,zoom:3,lodMode:0,tileSize:512,reqId:7,minX:2,maxX:5,minY:1,maxY:1}},
+   {code:5,name:"Commit",dir:"c2s",size:8,header:"The client seals the generation.",
+    fields:[["magic",0,1,"u8",170,"0xAA"],["type",1,1,"u8",5,"Type 0x05"],["imageId",2,2,"u16",1,"Must match chunks"],["reqId",4,4,"u32",7,"Generation"]],
+    notes:"The client sends nothing else for this generation. An empty commit (no chunks) is legal and the server answers it with END 0/0 through the same dispatcher path.",
+    enc:v=>{const b=new ArrayBuffer(8),d=new DataView(b);d.setUint8(0,170);d.setUint8(1,5);d.setUint16(2,v.imageId);d.setUint32(4,v.reqId);return b;},
+    values:{imageId:1,reqId:7}},
+   {code:3,name:"Abort",dir:"c2s",size:8,header:"The client cancels the live generation.",
+    fields:[["magic",0,1,"u8",170,"0xAA"],["type",1,1,"u8",3,"Type 0x03"],["imageId",2,2,"u16",1,"Must match live"],["reqId",4,4,"u32",7,"Must match live"]],
+    notes:"This message is best effort and it ends the generation. The pair must match the live generation or the receiver ignores it as stale. Cancellation lands at a frame boundary and no END follows.",
+    enc:v=>{const b=new ArrayBuffer(8),d=new DataView(b);d.setUint8(0,170);d.setUint8(1,3);d.setUint16(2,v.imageId);d.setUint32(4,v.reqId);return b;},
+    values:{imageId:1,reqId:7}},
+   {code:2,name:"Tile",dir:"s2c",size:24,header:"One JPEG tile.",
+    fields:[["magic",0,1,"u8",170,"0xAA"],["type",1,1,"u8",2,"Type 0x02"],["imageId",2,2,"u16",1,"Image"],["zoom",4,1,"u8",3,"Level"],["format",5,1,"u8",1,"1 is JPEG, never 2"],["tileSize",6,2,"u16",512,"Always 512"],["reqId",8,4,"u32",7,"Echoes generation"],["tileX",12,4,"u32",3,"Column"],["tileY",16,4,"u32",2,"Row"],["payloadLen",20,4,"u32",TILE_EX,"JPEG bytes after header, 1 to 2 MiB (example value)"]],
+    notes:"Frame length is exactly 24 plus payloadLen. payloadLen counts JPEG bytes only. The example value is illustrative. Real sizes are content dependent.",
+    enc:v=>{const b=new ArrayBuffer(24),d=new DataView(b);d.setUint8(0,170);d.setUint8(1,2);d.setUint16(2,v.imageId);d.setUint8(4,v.zoom);d.setUint8(5,v.format);d.setUint16(6,v.tileSize);d.setUint32(8,v.reqId);d.setUint32(12,v.tileX);d.setUint32(16,v.tileY);d.setUint32(20,v.payloadLen);return b;},
+    values:{imageId:1,zoom:3,format:1,tileSize:512,reqId:7,tileX:3,tileY:2,payloadLen:TILE_EX},payload:true},
+   {code:4,name:"End",dir:"s2c",size:16,header:"The generation drained.",
+    fields:[["magic",0,1,"u8",170,"0xAA"],["type",1,1,"u8",4,"Type 0x04"],["imageId",2,2,"u16",1,"Image"],["reqId",4,4,"u32",7,"Generation"],["sent",8,4,"u32",6,"Tiles written"],["skipped",12,4,"u32",0,"Requested but not sent"]],
+    notes:"The server sends it only when the generation is sealed, not canceled, still active, fully drained, with nothing in flight. The client reconciles sent plus skipped and per-key sets exactly.",
+    enc:v=>{const b=new ArrayBuffer(16),d=new DataView(b);d.setUint8(0,170);d.setUint8(1,4);d.setUint16(2,v.imageId);d.setUint32(4,v.reqId);d.setUint32(8,v.sent);d.setUint32(12,v.skipped);return b;},
+    values:{imageId:1,reqId:7,sent:6,skipped:0}}
+  ];
+  let cur=0;
+  function fieldAt(f,i){return f.findIndex(x=>i>=x[1]&&i<x[1]+x[2]);}
+  function render(){
+    $("packetTabs").innerHTML=PK.map((p,i)=>"<button role=\"tab\" aria-selected=\""+(i===cur)+"\" class=\""+(i===cur?"on":"")+"\" data-i=\""+i+"\">0x0"+p.code+" "+p.name+"</button>").join("");
+    const btns=document.querySelectorAll("#packetTabs button");
+    btns.forEach(b=>b.addEventListener("click",()=>{cur=+b.dataset.i;render();}));
+    const p=PK[cur],buf=p.enc(p.values),bytes=Array.from(new Uint8Array(buf));
+    const cells=bytes.map((b,i)=>{const fi=fieldAt(p.fields,i);
+      return "<button class=\"byte\" data-f=\""+fi+"\" style=\"background:"+PAL[fi%PAL.length]+"\" aria-label=\"byte "+i+"\">"+b.toString(16).padStart(2,"0")+"</button>";}).join("")
+      +(p.payload?"<span class=\"byte payload\">JPEG payload, "+nf(p.values.payloadLen)+" B (example)</span>":"");
+    const rows=p.fields.map((f,i)=>"<tr class=\"hoverrow\" data-f=\""+i+"\" tabindex=\"0\"><td><code>"+f[0]+"</code></td><td>"+f[1]+"</td><td>"+f[2]+"</td><td>"+f[3]+"</td><td><code>"+f[4]+"</code></td><td>"+f[5]+"</td></tr>").join("");
+    const dir=p.dir==="c2s"?"<span class=\"badge c2s\">client to server</span>":"<span class=\"badge s2c\">server to client</span>";
+    $("packetPanel").innerHTML="<div class=\"panel\"><div class=\"panel-head\"><span>"+p.name+", "+p.size+" bytes"+(p.payload?" plus payload":"")+"</span>"+dir+"</div>"
+      +"<p class=\"caption\">"+p.header+"</p><div class=\"bytes\">"+cells+"</div>"
+      +"<p class=\"hexline\">"+hex(buf)+"</p>"
+      +"<table class=\"table\"><thead><tr><th>Field</th><th>Offset</th><th>Size</th><th>Type</th><th>Example</th><th>Notes</th></tr></thead><tbody>"+rows+"</tbody></table>"
+      +"<p class=\"caption\">"+p.notes+"</p></div>";
+    const hi=fi=>{
+      document.querySelectorAll("#packetPanel .byte[data-f]")
+        .forEach(c=>c.classList.toggle("hl",+c.dataset.f===fi));
+      document.querySelectorAll("#packetPanel .hoverrow")
+        .forEach(r=>r.classList.toggle("hl",+r.dataset.f===fi));};
+    document.querySelectorAll("#packetPanel .byte[data-f]").forEach(c=>{
+      c.addEventListener("mouseenter",()=>hi(+c.dataset.f));
+      c.addEventListener("mouseleave",()=>hi(-99));
+      c.addEventListener("click",()=>hi(+c.dataset.f));
+      c.addEventListener("focus",()=>hi(+c.dataset.f));
+      c.addEventListener("blur",()=>hi(-99));});
+    document.querySelectorAll("#packetPanel .hoverrow").forEach(r=>{
+      r.addEventListener("mouseenter",()=>hi(+r.dataset.f));
+      r.addEventListener("mouseleave",()=>hi(-99));
+      r.addEventListener("click",()=>hi(+r.dataset.f));
+      r.addEventListener("focus",()=>hi(+r.dataset.f));
+      r.addEventListener("blur",()=>hi(-99));});
+  }
+  render();
+})();
+
+/* generation stepper with animated svg */
+(function(){
+  function centerFirst(minX,maxX,minY,maxY){
+    const ccx=(minX+maxX)/2,ccy=(minY+maxY)/2,ks=[];
+    for(let y=minY;y<=maxY;y++)for(let x=minX;x<=maxX;x++)ks.push({x,y});
+    ks.sort((a,b)=>(Math.abs(a.x-ccx)+Math.abs(a.y-ccy))-(Math.abs(b.x-ccx)+Math.abs(b.y-ccy))||a.y-b.y||a.x-b.x);
+    return ks;
+  }
+  function build(scen){
+    const S=[];
+    if(scen==="clean"){
+      const order=centerFirst(2,4,2,3);
+      S.push({t:"CHUNK reqId 7, image 1, Z3, X 2 to 4 Y 2 to 3",d:"c2s",bytes:28,st:{active:"gen 7 (image 1, Z3)",seen:7,sealed:"false",sent:"0",skipped:"0"}});
+      S.push({t:"COMMIT reqId 7, client seals, server builds center first work list",d:"c2s",bytes:8,st:{sealed:"true"}});
+      S.push({t:"server validates, builds immutable list, banks one coalesced permit, no wire yet",d:"note",bytes:0,st:{}});
+      order.forEach(o=>S.push({t:"TILE Z3 "+o.x+","+o.y+", example payload "+nf(TILE_EX)+" B",d:"s2c",bytes:24+TILE_EX,st:{sent:"plus 1"}}));
+      S.push({t:"END sent 6 skipped 0, sealed, active, drained, nothing in flight",d:"s2c",bytes:16,st:{active:"cleared (dispatcher clears after END)"}});
+      S.push({t:"client reconciles sent plus skipped and per-key sets, batch completes",d:"note",bytes:0,st:{}});
+    }else if(scen==="supersede"){
+      const o1=centerFirst(0,2,0,1);
+      S.push({t:"CHUNK reqId 7, Z3 X 0 to 2 Y 0 to 1",d:"c2s",bytes:28,st:{active:"gen 7",seen:7}});
+      S.push({t:"COMMIT reqId 7, gen 7 sealed",d:"c2s",bytes:8,st:{sealed:"true"}});
+      S.push({t:"TILE Z3 "+o1[0].x+","+o1[0].y+" (gen 7, frame already started)",d:"s2c",bytes:24+TILE_EX,st:{sent:"plus 1"}});
+      S.push({t:"CHUNK reqId 8, Z3 X 5 to 6 Y 1 to 2, supersedes, gen 7 canceled",d:"c2s",bytes:28,st:{active:"gen 8 (gen 7 canceled)",seen:8,sealed:"false",sent:"0",skipped:"0"}});
+      S.push({t:"gen 7 in flight frame finishes, client discards, staleTiles up, socket OPEN",d:"s2c",bytes:24+TILE_EX,st:{}});
+      S.push({t:"COMMIT reqId 8, gen 8 sealed",d:"c2s",bytes:8,st:{sealed:"true"}});
+      centerFirst(5,6,1,2).forEach(o=>S.push({t:"TILE Z3 "+o.x+","+o.y+" (gen 8)",d:"s2c",bytes:24+TILE_EX,st:{sent:"plus 1"}}));
+      S.push({t:"END gen 8 sent 6 skipped 0, gen 7 never gets an END, canceled is correct",d:"s2c",bytes:16,st:{active:"cleared"}});
+    }else{
+      S.push({t:"CHUNK reqId 7, Z3 X 2 to 4 Y 2 to 3",d:"c2s",bytes:28,st:{active:"gen 7",seen:7}});
+      S.push({t:"ABORT (image 1, reqId 7), pair matches live generation",d:"c2s",bytes:8,st:{active:"none (canceled at frame boundary)"}});
+      S.push({t:"no new TILE starts, an in flight TILE may finish, no END for a canceled generation",d:"note",bytes:0,st:{}});
+    }
+    return S;
+  }
+  let scen="clean",steps=build(scen),pos=-1,timer=null;
+  function renderSvg(){
+    const rowH=46,top=66,laneL=180,laneR=660,width=820;
+    const height=top+steps.length*rowH+24,parts=[];
+    parts.push("<svg viewBox=\"0 0 "+width+" "+height+"\" role=\"img\" aria-label=\"UTP sequence diagram\">");
+    parts.push("<defs><marker id=\"aC\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M 0 0 L 10 5 L 0 10 z\" fill=\"#6a5cc4\"></path></marker>");
+    parts.push("<marker id=\"aS\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M 0 0 L 10 5 L 0 10 z\" fill=\"#1f7a66\"></path></marker></defs>");
+    parts.push("<rect x=\""+(laneL-76)+"\" y=\"18\" width=\"152\" height=\"30\" rx=\"8\" fill=\"#ece8f6\"></rect>");
+    parts.push("<text x=\""+laneL+"\" y=\"38\" text-anchor=\"middle\" font-size=\"12\" font-weight=\"600\" fill=\"#544aa8\">Client (viewer)</text>");
+    parts.push("<rect x=\""+(laneR-76)+"\" y=\"18\" width=\"152\" height=\"30\" rx=\"8\" fill=\"#ddf3ec\"></rect>");
+    parts.push("<text x=\""+laneR+"\" y=\"38\" text-anchor=\"middle\" font-size=\"12\" font-weight=\"600\" fill=\"#1f7a66\">Server (session)</text>");
+    parts.push("<line x1=\""+laneL+"\" y1=\"56\" x2=\""+laneL+"\" y2=\""+(height-10)+"\" stroke=\"#ddd7e4\" stroke-dasharray=\"3 4\"></line>");
+    parts.push("<line x1=\""+laneR+"\" y1=\"56\" x2=\""+laneR+"\" y2=\""+(height-10)+"\" stroke=\"#ddd7e4\" stroke-dasharray=\"3 4\"></line>");
+    steps.forEach((s,i)=>{
+      const y=top+i*rowH;
+      if(s.d==="note"){
+        parts.push("<g class=\"gstep\" data-i=\""+i+"\"><rect x=\"230\" y=\""+(y-14)+"\" width=\"380\" height=\"30\" rx=\"6\" fill=\"#fdf0d8\" stroke=\"#e8d5ae\"></rect>");
+        parts.push("<text x=\"420\" y=\""+(y+5)+"\" text-anchor=\"middle\" font-size=\"11\" fill=\"#8a5f14\">"+s.t+"</text></g>");
+        return;
+      }
+      const c2s=s.d==="c2s",x1=c2s?laneL:laneR,x2=c2s?laneR:laneL;
+      const color=c2s?"#6a5cc4":"#1f7a66",mk=c2s?"aC":"aS";
+      const nm=s.t.split(",")[0];
+      parts.push("<g class=\"gstep\" data-i=\""+i+"\">");
+      parts.push("<line x1=\""+x1+"\" y1=\""+y+"\" x2=\""+(x1+(x2-x1)*0.94)+"\" y2=\""+y+"\" stroke=\""+color+"\" stroke-width=\"2\" marker-end=\"url(#"+mk+")\"></line>");
+      parts.push("<text x=\"420\" y=\""+(y-8)+"\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"600\" fill=\""+color+"\">"+nm+" ("+fmtBytes(s.bytes)+")</text>");
+      parts.push("<text x=\"420\" y=\""+(y+14)+"\" text-anchor=\"middle\" font-size=\"10.5\" fill=\"#6f647e\">"+s.t+"</text>");
+      parts.push("</g>");
+    });
+    parts.push("</svg>");
+    $("genSvgWrap").innerHTML=parts.join("");
+  }
+  function render(){
+    const gs=document.querySelectorAll("#genSvgWrap .gstep");
+    gs.forEach(g=>{const i=+g.dataset.i;g.style.opacity=i>pos?0.12:(i===pos?1:0.5);});
+    let wire=0;for(let k=0;k<=pos;k++)wire+=steps[k].bytes||0;
+    const cur=pos>=0?steps[pos]:null,st=cur&&cur.st?cur.st:{};
+    $("genState").innerHTML="<div><span class=\"k\">showing</span> "+(pos+1)+" / "+steps.length+"</div>"
+      +"<div><span class=\"k\">active</span> "+(st.active||"-")+"</div>"
+      +"<div><span class=\"k\">lastReqIdSeen</span> "+(st.seen!==undefined?st.seen:"-")+"</div>"
+      +"<div><span class=\"k\">sealed</span> "+(st.sealed||"-")+"</div>"
+      +"<div><span class=\"k\">sent change</span> "+(st.sent||"-")+"</div>"
+      +"<div><span class=\"k\">rejectedReqIds</span> {} <span class=\"k\">(empty in these scenarios)</span></div>";
+    $("genBytes").textContent=fmtBytes(wire)+" UTP";
+    $("gLabel").textContent="step "+(pos+1)+" / "+steps.length;
+    $("gPrev").disabled=pos<0;$("gNext").disabled=pos>=steps.length-1;
+  }
+  function stop(){$("gPlay").textContent="Play";if(timer){clearInterval(timer);timer=null;}}
+  function next(){if(pos<steps.length-1){pos++;render();}else stop();}
+  $("genScenario").addEventListener("change",e=>{stop();scen=e.target.value;steps=build(scen);pos=-1;renderSvg();render();});
+  $("gNext").addEventListener("click",()=>{stop();next();});
+  $("gPrev").addEventListener("click",()=>{stop();if(pos>=0){pos--;render();}});
+  $("gReset").addEventListener("click",()=>{stop();pos=-1;render();});
+  $("gPlay").addEventListener("click",()=>{
+    if(timer){stop();return;}
+    if(pos>=steps.length-1)pos=-1;
+    $("gPlay").textContent="Pause";
+    timer=setInterval(()=>{if(pos>=steps.length-1)stop();else next();},1600);});
+  renderSvg();render();
+})();
+
+/* concurrency widgets */
+(function(){
+  const stages=["open channel","size call declares 24 plus fileSize","write 24 byte UTP header","positional transferTo loop","64 KiB fallback only after repeated zero progress","frame complete, channel cleared (never closed on success)"];
+  let p=0;
+  function sess(){const n=+$("sessRange").value;$("sessN").textContent=n;
+    $("sessOut").textContent=n+" session(s): 1 accept thread plus "+(2*n)+" session threads ("+n+" reader plus "+n+" dispatcher) plus short lived HTTP threads. Cost follows clients, not image size.";}
+  function dots(){const ds=document.querySelectorAll("#streamDots i");ds.forEach((d,i)=>d.classList.toggle("on",i<=p));}
+  function stream(){$("streamOut").textContent="stream step "+(p+1)+" / "+stages.length+": "+stages[p]+". Per tile server buffer is 24 B header"+(p===4?" plus 64 KiB fallback (this path only)":"")+ ". A 2 MiB tile never becomes a byte array.";dots();}
+  $("sessRange").addEventListener("input",sess);
+  $("tileStep").addEventListener("click",()=>{p=(p+1)%stages.length;stream();});
+  $("tileReset").addEventListener("click",()=>{p=0;stream();});
+  sess();stream();
+})();
+
+/* batch budget */
+(function(){
+  function calc(){
+    const fj=+$("bJobs").value,fb=(+$("bBytes").value)*1048576,avg=(+$("bAvg").value)*1024;
+    const plan=Math.max(avg,65536);
+    const budget=Math.min(30,fj,Math.max(1,Math.floor(fb/plan)));
+    const ok=fj>0&&fb>=2097152;
+    $("bOut").textContent="planTileBytes is max("+nf(avg)+", 65,536) = "+nf(plan)+" B. Budget is min(30, "+fj+", floor("+nf(fb)+" / "+nf(plan)+")) = "+budget+" tiles.";
+    const pill=$("gatePill");pill.textContent=ok?"headroom OK, batch may send":"headroom closed, batch waits for drain";
+    pill.className="gatepill "+(ok?"ok":"no");
+  }
+  ["bJobs","bBytes","bAvg"].forEach(id=>$(id).addEventListener("input",calc));calc();
+})();
+
+/* pipeline stage selector */
+(function(){
+  const INFO={
+    needed:"Needed: tiles the viewport wants this epoch, minus everything already owned or sidelined.",
+    pending:"Pending: requested over UTP and awaiting its TILE. Dropped the moment the tile arrives.",
+    received:"Received: payload arrived. Admitted to decode, or sidelined to retry or terminal.",
+    decode:"Decode queue: bounded at 24 jobs and 4 MiB. Overflow parks tiles in retryNeeded.",
+    cached:"Cached: decoded bitmaps under LFUDA-40, with viewport and z equal 0 protection."};
+  const btns=Array.from(document.querySelectorAll(".stages .st"));
+  let pinned="cached";
+  function show(key){btns.forEach(b=>b.classList.toggle("hot",b.dataset.stage===key));
+    $("stageInfo").textContent=INFO[key];}
+  btns.forEach(b=>{
+    b.addEventListener("mouseenter",()=>show(b.dataset.stage));
+    b.addEventListener("focus",()=>show(b.dataset.stage));
+    b.addEventListener("click",()=>{pinned=b.dataset.stage;show(pinned);});});
+  const strip=document.querySelector(".stages");
+  strip.addEventListener("mouseleave",()=>show(pinned));
+})();
+
+/* guided LFUDA trace at capacity 4 */
+(function(){
+  const steps=[
+    {n:"Insert A, B, C (epoch 1). Each enters at frequency 1, priority age (0) plus 1.",
+     f(c){c.insert("A",{epoch:1});c.insert("B",{epoch:1});c.insert("C",{epoch:1});},
+     w:"Insertion is that epoch reference, so it is not counted twice."},
+    {n:"Insert Z0 overview with pin (epoch 1). The z equal 0 tile stays pinned for the image lifetime.",
+     f(c){c.insert("Z0",{epoch:1,pin:true});},
+     w:"Cache is now full (4 of 4). Pinned is not frequent. Pinning controls eligibility, never frequency."},
+    {n:"Render pass. Peek A, B, C, Z0 fifty times each. Frequencies do not move.",
+     f(c){for(let i=0;i<50;i++){c.peek("A");c.peek("B");c.peek("C");c.peek("Z0");}},
+     w:"Rendering uses peek. Counting redraws would measure redraw rate, not reuse."},
+    {n:"Epoch 2 needs A again. markNeeded(A, 2) moves A to frequency 2, priority 0 plus 2.",
+     f(c){c.mark("A",2);c.mark("A",2);},
+     w:"The second call in the same epoch counts once (lastCountedEpoch). At most one frequency per viewport epoch."},
+    {n:"Viewport target becomes A and B. Protection removes candidates. It never inflates frequencies.",
+     f(c){c.target=new Set(["A","B"]);},
+     w:"Protection answers who may be evicted. LFUDA answers who loses."},
+    {n:"Epoch 2 admits D. Only C is eligible (A and B protected, Z0 pinned, D excluded as just admitted). C leaves as victim (priority 1). Age moves to max(0, 1), which is 1.",
+     f(c){c.insert("D",{epoch:2});},
+     w:"The just admitted tile must not evict itself. Without the guard, D at priority age plus 1 would be the global minimum and the viewport would never converge."},
+    {n:"Target moves to B and D. Old hot A is now eligible at priority 2, above the floor, so it survives this time.",
+     f(c){c.target=new Set(["B","D"]);},
+     w:"An entry may sit below the watermark while protected. Once eligible it is the cheapest candidate. That is aging working as intended."},
+    {n:"Epoch 3 admits E. Eligible entries are A (2) and D. Victim is A (lowest eligible). Age moves to max(1, 2), which is 2. The A bitmap is closed exactly once.",
+     f(c){c.insert("E",{epoch:3});},
+     w:"This is what naive LFU cannot do. Old popularity bleeds off. An LRU here would evict by touch order instead of by priority and admission."}
+  ];
+  let c=new Lfuda(4),pos=-1;
+  function render(){
+    const keys=["A","B","C","D","E","Z0"].filter(k=>c.map.has(k));
+    const rows=keys.map(k=>{const e=c.map.get(k);
+      let prot="-";if(c.pinned.has(k)&&c.target.has(k))prot="pinned plus target";
+      else if(c.pinned.has(k))prot="pinned";else if(c.target.has(k))prot="target";
+      const cls=c.lastVictim===k?"victim":((c.pinned.has(k)||c.target.has(k))?"prot":"");
+      return "<tr class=\""+cls+"\"><td><code>"+k+"</code></td><td>"+e.freq+"</td><td>"+e.prio+"</td><td>"+prot+"</td><td>#"+e.seq+"</td></tr>";}).join("")
+      ||"<tr><td colspan=\"5\" style=\"color:var(--muted)\">empty, press Next</td></tr>";
+    $("lfBody").innerHTML=rows;
+    c.lastVictim=null;
+    $("lfAge").textContent="age watermark = "+c.age+" (monotonic, max(age, victim.priority)). Evictions = "+c.evicts+". Bitmaps closed = "+c.closed+". Capacity 4 here (conceptual). Production uses 40 with the same rule.";
+    $("lfLabel").textContent="step "+(pos+1)+" / "+steps.length;
+    $("lfNarr").textContent=pos<0?"Press Next to begin with insert A, B, C.":steps[pos].n;
+    $("lfWhy").textContent=pos<0?"Frequency is a viewport epoch, not a render.":steps[pos].w;
+  }
+  $("lfNext").addEventListener("click",()=>{if(pos<steps.length-1){pos++;steps[pos].f(c);
+    if(pos===5)c.lastVictim="C";if(pos===7)c.lastVictim="A";render();}});
+  $("lfReset").addEventListener("click",()=>{c=new Lfuda(4);pos=-1;render();});
+  render();
+})();
+
+/* live LFUDA sweep at full capacity 40 */
+(function(){
+  const GRID=8,VIEW_W=4,VIEW_H=3,CAP=40,EX=147456;
+  const ctx=setupCanvas($("cacheCanvas"),330,330),cell=330/GRID;
+  let cache=new Lfuda(CAP),vx=0,vy=0,dx=1,epoch=0;
+  let requests=0,received=0,bytes=0,speed=1,timer=null,playing=false,done=false;
+  let flashNew=new Set(),flashOut=new Set();
+  const seen=new Set();
+  cache.insert("3:0:0",{epoch:0,pin:true});
+  function needKeys(){const ks=[];
+    for(let y=vy;y<vy+VIEW_H&&y<GRID;y++)for(let x=vx;x<vx+VIEW_W&&x<GRID;x++)ks.push("3:"+x+":"+y);
+    return ks;}
+  function draw(){
+    ctx.clearRect(0,0,330,330);ctx.fillStyle="#f3f1f6";ctx.fillRect(0,0,330,330);
+    for(let y=0;y<GRID;y++)for(let x=0;x<GRID;x++){
+      const key="3:"+x+":"+y,px=x*cell,py=y*cell,e=cache.map.get(key);
+      if(flashOut.has(key))ctx.fillStyle="#fbe4e5";
+      else if(flashNew.has(key))ctx.fillStyle="#d9f0e8";
+      else if(e){const q=e.prio;
+        if(cache.pinned.has(key))ctx.fillStyle="#e8c96a";
+        else if(q>=4)ctx.fillStyle="#6a5cc4";
+        else if(q>=2)ctx.fillStyle="#a89ad6";
+        else ctx.fillStyle="#d9d3ea";}
+      else ctx.fillStyle="#eceaf0";
+      ctx.fillRect(px+1,py+1,cell-2,cell-2);
+      ctx.strokeStyle=cache.target.has(key)?"#3d6fb4":"#ddd7e4";
+      ctx.lineWidth=cache.target.has(key)?2:1;
+      ctx.strokeRect(px+0.5,py+0.5,cell-1,cell-1);
+      if(e){ctx.fillStyle=cache.pinned.has(key)?"#5a4510":(e.prio>=4?"#fff":"#1d1529");
+        ctx.font="9px ui-monospace,monospace";ctx.textAlign="center";
+        ctx.fillText("f"+e.freq,px+cell/2,py+cell/2+3);}}
+    ctx.strokeStyle="#1d1529";ctx.lineWidth=2;
+    ctx.strokeRect(vx*cell+1,vy*cell+1,VIEW_W*cell-2,VIEW_H*cell-2);
+  }
+  function strip(){
+    const items=Array.from(cache.map.keys());
+    let html="";
+    for(let i=0;i<CAP;i++){const key=items[i];
+      let cls="";
+      if(key){const e=cache.map.get(key);
+        if(cache.pinned.has(key))cls="pin";
+        else if(e.prio>=4)cls="f3";
+        else if(e.prio>=2)cls="f2";
+        else cls="f1";
+        if(flashNew.has(key))cls+=" new";
+        if(flashOut.has(key))cls+=" out";}
+      html+="<i class=\""+cls+"\" title=\""+(key?key+" f"+cache.map.get(key).freq+" p"+cache.map.get(key).prio:"empty")+"\"></i>";}
+    $("cacheStrip").innerHTML=html;
+  }
+  function counters(){
+    $("cRequests").textContent=nf(requests);
+    $("cReceived").textContent=nf(received);
+    $("cEvict").textContent=nf(cache.evicts);
+    $("cBytes").textContent=fmtBytes(bytes);
+    $("cCover").textContent=Math.round(100*seen.size/(GRID*GRID))+"%";
+    $("cCache").textContent=cache.map.size+" / "+CAP;
+    $("cAge").textContent=cache.age;
+  }
+  function tick(){
+    if(done){stop();return;}
+    epoch++;requests++;
+    const need=needKeys();
+    cache.target=new Set(need);
+    flashNew=new Set();flashOut=new Set();
+    const before=cache.evicts;
+    const order=need.slice().sort((a,b)=>{
+      const pa=a.split(":"),pb=b.split(":");
+      return(+pa[2]-+pb[2])||(+pa[1]-+pb[1]);});
+    for(const key of order){
+      const hit=cache.mark(key,epoch);
+      if(!hit&&!cache.has(key)){
+        const ev0=cache.lastVictim;
+        cache.insert(key,{epoch});
+        if(cache.lastVictim&&cache.lastVictim!==ev0)flashOut.add(cache.lastVictim);
+        flashNew.add(key);received++;bytes+=EX;seen.add(key);}}
+    if(cache.evicts===before)cache.lastVictim=null;
+    vx+=dx;
+    if(vx<0||vx+VIEW_W>GRID){vx=clamp(vx,0,GRID-VIEW_W);dx=-dx;vy++;}
+    if(vy+VIEW_H>GRID){vy=GRID-VIEW_H;done=true;$("cacheState").textContent="sweep complete";stop();}
+    draw();strip();counters();
+  }
+  function stop(){playing=false;if(timer){clearInterval(timer);timer=null;}$("cachePlay").textContent="Play";}
+  function play(){if(done)return;playing=true;$("cachePlay").textContent="Pause";
+    $("cacheState").textContent="sweeping";timer=setInterval(tick,620/speed);}
+  $("cachePlay").addEventListener("click",()=>{if(playing){stop();if(!done)$("cacheState").textContent="paused";}else play();});
+  $("cacheStep").addEventListener("click",()=>{stop();if(!done)$("cacheState").textContent="stepping";tick();});
+  $("cacheReset").addEventListener("click",()=>{stop();cache=new Lfuda(CAP);
+    cache.insert("3:0:0",{epoch:0,pin:true});
+    vx=0;vy=0;dx=1;epoch=0;requests=0;received=0;bytes=0;seen.clear();done=false;
+    flashNew=new Set();flashOut=new Set();$("cacheState").textContent="idle";
+    draw();strip();counters();});
+  $("cacheSpeed").addEventListener("click",e=>{speed=speed===1?2:(speed===2?4:1);
+    e.target.textContent="Speed "+speed+"x";if(playing){stop();play();}});
+  draw();strip();counters();
+})();
+
+/* nav progress print */
+(function(){
+  const links=Array.from(document.querySelectorAll("#nav a"));
+  const secs=links.map(a=>document.querySelector(a.getAttribute("href"))).filter(Boolean);
+  function onScroll(){const d=document.documentElement;
+    $("progress").style.width=(100*d.scrollTop/Math.max(1,d.scrollHeight-d.clientHeight))+"%";
+    let cur=-1;secs.forEach((s,i)=>{if(s.getBoundingClientRect().top<=140)cur=i;});
+    links.forEach((a,i)=>a.classList.toggle("on",i===cur));}
+  window.addEventListener("scroll",onScroll,{passive:true});onScroll();
+  $("printBtn").addEventListener("click",()=>window.print());
+})();
+</script>
+</body>
+</html>
