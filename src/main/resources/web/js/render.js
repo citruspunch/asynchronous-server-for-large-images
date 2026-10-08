@@ -92,6 +92,30 @@ function render() {
   updateHud();
 }
 
+// Human-readable formatting for the status bar. The raw counters in the
+// Statistics panel stay numeric on purpose: the harness reads them.
+function fmtBytes(n) {
+  if (!Number.isFinite(n) || n < 0) {
+    return "—";
+  }
+  if (n < 1024) {
+    return n + " B";
+  }
+  const units = ["KB", "MB", "GB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return (v >= 100 ? String(Math.round(v)) : v.toFixed(1)) + " " + units[i];
+}
+
+function fmtZoom(s) {
+  const pct = s * 100;
+  return (pct >= 10 ? String(Math.round(pct)) : pct.toFixed(1)) + "%";
+}
+
 function updateHud() {
   let d = null;
   try {
@@ -130,10 +154,23 @@ function updateHud() {
   set("gen", lastReqId);
   set("netCov", netCov());
   set("covCov", covCov().toFixed(3));
-  if (currentImage && Number.isFinite(camS) && camS > 0) {
-    set("infoImage", "image-" + currentImage.id + " · " + currentImage.w
+  if (currentImage) {
+    const maxZ = maxLevelFor(currentImage.w, currentImage.h);
+    set("hrImage", "image-" + currentImage.id + " · " + currentImage.w
       + " × " + currentImage.h);
-    const pct = camS * 100;
-    set("infoZoom", (pct >= 10 ? Math.round(pct) : pct.toFixed(1)) + "%");
+    let detail = "detail " + desired + "/" + maxZ;
+    if (eff !== desired) {
+      detail += " (shown at " + eff + ")";
+    }
+    set("hrDetail", detail);
+  }
+  set("hrCache", cache.size + "/" + MAX_CACHE);
+  const needs = cache.hits + cache.misses;
+  set("hrHits", needs > 0 ? Math.round((100 * cache.hits) / needs) + "%" : "—");
+  set("hrRx", fmtBytes(rxBytes));
+  set("hrReqs", reqCount);
+  if (currentImage && Number.isFinite(camS) && camS > 0) {
+    set("zoomZ", "z" + desired);
+    set("zoomPct", fmtZoom(camS));
   }
 }

@@ -4,14 +4,15 @@
  * system (zinc dark palette, --radius, muted/border/ring) and the same
  * component vocabulary (button variants, badge, card, select, separator,
  * kbd), with no React, no Tailwind and no external font or icon request.
- * The viewer must stay offline-clean, so every value here is local.
+ * Icons are Phosphor Icons (MIT), inlined as a local <symbol> sprite; see
+ * PHOSPHOR-LICENSE.txt next to this file.
  *
  * Layout contract, unchanged and load-bearing: body is a flex column, the
- * topbar and footer are flex: 0 0 auto, main is flex: 1 with min-height: 0,
- * and #view is absolutely positioned inside a relative main so its box is
- * always definite -- resizeCanvas() reads clientWidth/clientHeight to size
- * the backing store. Do not pin the canvas below a guessed header height:
- * the toolbar wraps on narrow windows, so its height is not a constant.
+ * topbar and status bar are flex: 0 0 auto, main is flex: 1 with
+ * min-height: 0, and #view is absolutely positioned inside a relative main so
+ * its box is always definite -- resizeCanvas() reads clientWidth/clientHeight
+ * to size the backing store. Do not pin the canvas below a guessed header
+ * height: the toolbar wraps on narrow windows, so its height is not constant.
  */
 
 :root {
@@ -35,6 +36,8 @@
   --input: #27272a;
   --ring: #d4d4d8;
   --radius: 0.625rem;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
 }
 
 * { box-sizing: border-box; }
@@ -71,6 +74,17 @@ body {
   border: 0;
 }
 
+/* ---- icons (inline Phosphor sprite) ---- */
+
+.icon-sprite { display: none; }
+
+.icon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  display: block;
+}
+
 /* ---- topbar ---- */
 
 .topbar {
@@ -94,20 +108,6 @@ body {
   gap: 0.6rem;
   min-width: 0;
 }
-
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  flex: 0 0 auto;
-  border-radius: calc(var(--radius) - 4px);
-  background: var(--secondary);
-  border: 1px solid var(--border);
-  color: var(--muted-foreground);
-}
-
-.brand-mark svg { width: 1.05rem; height: 1.05rem; }
 
 .brand-text {
   display: flex;
@@ -167,8 +167,6 @@ body {
 .select-chevron {
   position: absolute;
   right: 0.55rem;
-  width: 1rem;
-  height: 1rem;
   color: var(--muted-foreground);
   pointer-events: none;
 }
@@ -205,14 +203,14 @@ body {
 .btn.on { background: var(--accent); border-color: var(--ring); }
 
 .btn-icon { width: 2rem; padding: 0; }
-.btn-icon svg { width: 1rem; height: 1rem; }
 
 .btn-sm { height: 1.65rem; width: 1.65rem; }
-.btn-sm svg { width: 0.85rem; height: 0.85rem; }
+.btn-sm .icon { width: 0.85rem; height: 0.85rem; }
 
 .btn-group { display: inline-flex; }
 
-.btn-group .btn {
+.btn-group .btn,
+.btn-group .zoom-level {
   border-radius: 0;
   margin-left: -1px;
 }
@@ -227,6 +225,31 @@ body {
 }
 
 .btn-group .btn:focus-visible { z-index: 1; }
+
+/* ---- highlighted zoom readout ---- */
+
+.zoom-level {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  height: 2rem;
+  min-width: 5.75rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  user-select: none;
+}
+
+.zoom-z { color: var(--muted-foreground); }
+.zoom-pct { color: var(--foreground); }
+.zoom-dot { color: var(--muted-foreground); opacity: 0.6; }
 
 /* ---- status badge (setStatus replaces className, so the base is #status) ---- */
 
@@ -287,36 +310,6 @@ main {
 }
 
 #view:active { cursor: grabbing; }
-
-/* ---- viewport chip ---- */
-
-.viewport-chip {
-  position: absolute;
-  left: 0.75rem;
-  bottom: 0.75rem;
-  z-index: 5;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.3rem 0.65rem;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: rgba(9, 9, 11, 0.72);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  font-size: 0.72rem;
-  color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-}
-
-.chip-dot {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: var(--muted-foreground);
-  opacity: 0.6;
-}
 
 /* ---- stats panel ---- */
 
@@ -383,6 +376,8 @@ main {
   display: inline-flex;
   align-items: baseline;
   gap: 0.15rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -434,39 +429,95 @@ main {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---- footer ---- */
+/* ---- status bar ---- */
 
-footer {
+.statusbar {
   flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem 1.25rem;
-  padding: 0.3rem 0.875rem;
-  font-size: 0.7rem;
+  padding: 0.35rem 0.875rem;
+  font-size: 0.72rem;
   color: var(--muted-foreground);
   background: var(--background);
   border-top: 1px solid var(--border);
 }
 
-.footer-dim { margin-left: auto; color: #71717a; }
+.status-left {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.status-strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.status-dim { color: var(--muted-foreground); }
+
+.status-hints {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.status-hints kbd { margin-right: 0.15rem; }
+
+.status-right {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 1rem;
+  margin-left: auto;
+}
+
+.insight {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.insight .icon {
+  width: 0.85rem;
+  height: 0.85rem;
+  color: var(--muted-foreground);
+}
+
+.insight b {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+}
+
+.insight-label { color: var(--muted-foreground); }
 
 kbd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   color: var(--foreground);
   background: var(--secondary);
   border: 1px solid var(--border);
   border-radius: 0.3rem;
   padding: 0.05rem 0.3rem;
-  margin-right: 0.25rem;
 }
 
 /* ---- responsive ---- */
 
-@media (max-width: 720px) {
+@media (max-width: 860px) {
   .brand-text span { display: none; }
-  .footer-dim { display: none; }
+  .status-hints { display: none; }
+}
+
+@media (max-width: 720px) {
+  .status-right { margin-left: 0; }
 
   .stats {
     left: 0.75rem;

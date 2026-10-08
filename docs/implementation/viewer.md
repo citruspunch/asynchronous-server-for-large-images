@@ -23,7 +23,7 @@ reordering the tags would break the code.
 | 4 | `geometry.js` | Pyramid math, LOD selection, budgets, coverage, chunk runs |
 | 5 | `codec.js` | `encodeViewport`, `encodeCommit`, `encodeAbort`, `parseTileHeader`, `parseEnd` |
 | 6 | `epoch.js` | `newViewEpoch` cleanup and decode completion |
-| 7 | `render.js` | Canvas compositing, the viewport chip, and the stats values |
+| 7 | `render.js` | Canvas compositing, the status bar, and the stats values |
 | 8 | `net.js` | Connection, the receive pipeline, END accounting |
 | 9 | `batches.js` | The network batch loop |
 | 10 | `app.js` | Boot, `selectImage`, input handlers, the `globalThis.UltraTile` seam |
@@ -732,18 +732,29 @@ moving. Per-entry frequency is deliberately not in the stats panel;
 **The page shell is presentation only.** `styles.css` implements a shadcn/ui
 style token system natively -- the zinc dark palette, `--radius`, and the
 muted/border/ring roles -- with no bundler, no CDN and no external font or icon
-request, consistent with the offline-clean rule the parity check enforces. The
-markup in `index.html` carries the layout and nothing else; no viewer logic
-reads it, and the sixteen `<b>` values stay raw numbers because the harness
-reads them numerically (`+hud.rxBytes.textContent`, and `hud.effZ` compared as
-a string). The toolbar controls (zoom out, Fit, zoom in, and the stats toggle)
-are wired in `app.js`'s `installHandlers` and are presentation only: they call
-`zoomBy()`, `fitToView()` and `setStatsOpen()` and never touch the protocol
-path. The boot overlay (`#bootOverlay`) names a failed startup instead of
-leaving a black rectangle, and the viewport chip (`#infoImage`, `#infoZoom`) is
-updated by `updateHud()` alongside the panel.
+request, consistent with the offline-clean rule the parity check enforces.
+Icons are Phosphor Icons (MIT), inlined as a local `<symbol>` sprite in
+`index.html`; the license text ships as `PHOSPHOR-LICENSE.txt` next to the
+viewer. The markup carries the layout and nothing else; no viewer logic reads
+it, and the sixteen `<b>` values stay raw numbers because the harness reads
+them numerically (`+hud.rxBytes.textContent`, and `hud.effZ` compared as a
+string). The toolbar controls (zoom out, the zoom readout, zoom in, Fit, and
+the stats toggle) are wired in `app.js`'s `installHandlers` and are presentation
+only: they call `zoomBy()`, `fitToView()` and `setStatsOpen()` and never touch
+the protocol path. The readout is the UTP zoom surfaced: `zoomZ` shows the
+viewport zoom level the next CHUNK would carry (`zN`), `zoomPct` the resulting
+scale. The boot overlay (`#bootOverlay`) names a failed startup instead of
+leaving a black rectangle.
 
-The body is a flex column with the toolbar and footer as `flex: 0 0 auto` and
+The status bar at the bottom is the human-readable view: `updateHud()` writes
+`image-<id> · W × H` (`hrImage`) and `detail Z/N` (`hrDetail`, with the
+effective level appended when the `UNION_CAP` downgrade applies) on the left,
+and `hrCache` (`entries/40`), `hrHits` (cache hit rate, `—` before the first
+epoch), `hrRx` and `hrReqs` on the right. Bytes and zoom are formatted by
+`fmtBytes()` and `fmtZoom()`; the same quantities stay raw and exact in the
+Statistics panel, which is the debugging view.
+
+The body is a flex column with the toolbar and status bar as `flex: 0 0 auto` and
 `main` as `flex: 1; min-height: 0`, so the canvas takes the space the toolbar
 leaves rather than being pinned below a guessed offset. The offset approach was
 the old rule (`main { position: fixed; top: 3rem }`) and it was wrong: the
