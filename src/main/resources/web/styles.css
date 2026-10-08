@@ -83,6 +83,7 @@ body {
   height: 1rem;
   flex: none;
   display: block;
+  fill: currentColor;
 }
 
 /* ---- topbar ---- */
