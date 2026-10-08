@@ -60,6 +60,9 @@ python3 scripts/measure_import.py
 python3 scripts/crash_recovery_test.py
 ```
 
+`measure_import.py` also accepts `--src PATH --id N` to measure an arbitrary
+source; it deletes and re-imports the published directory for that id.
+
 Optional evidence step. Not a gate, and not part of any suite:
 
 ```sh
@@ -290,7 +293,11 @@ header reading 512x512; every edge tile fully decoded with its pad verified as a
 step at the right offset (black from the computed content offset, content
 top-left, pad right and bottom); a sample of interior tiles decoded and confirmed
 non-blank; no duplicate payloads within a level; and seam-gradient sanity on the
-finest level.
+finest level. Duplicate detection is size-bucketed by default: identical payloads
+imply identical sizes, so only tiles sharing a size with another tile in the same
+level are hashed, which is a superset of all possible duplicates; `--deep-md5`
+restores hashing every tile. `--source PATH` points the dimension cross-check at
+a source outside `data/sources/`.
 
 The pad assertion is worth a note. An exact-zero check on the pad region was tried
 and produced 30 false failures on a correct pyramid, because Q85 JPEG rings the
@@ -327,7 +334,7 @@ independent axes, and a weakness in one is not covered by strength in another.
 | Concurrency | `real_pipeline_test.py --clients 10`, `coalescedStress20` | Behavior at 1000 clients; the model is trusted to be linear |
 | Protocol correctness | `UtpCodecTest`, `WsFrameTest`, `SessionTest`, `test_e2e_parser.py`, `e2e_utp.py` | Behavior against a hostile peer; that is out of scope by design |
 | Disk scalability | the `--data-root` relocation, the importer's free-space floor, the `long` tile counts | Filesystem behavior at tens of terabytes |
-| Import crash safety | `crash_recovery_test.py`, 9 kill points | A power cut during the final `rename` on a filesystem without atomic rename |
+| Import crash safety | `crash_recovery_test.py`: 9 timed kills, plus a kill right after `dzsave` finished and a `--resume` completion | A power cut during the final `rename` on a filesystem without atomic rename |
 | Evaluation-scale images | the 28, 55, and 93 GB sources the evaluator is expected to use | They are not in this repository, so nothing here is measured on them |
 
 The important caveat is the last one. The largest real pyramid built here is

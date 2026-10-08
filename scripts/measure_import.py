@@ -9,7 +9,14 @@ Phase timing is obtained from an INSTRUMENTED COPY of the production script.
 The copy is byte-identical except for `echo` lines that print SECONDS markers,
 so the work performed is the same; the production script is never modified and
 never depends on this harness or on /usr/bin/time.
+
+Usage: measure_import.py [<ladderId> ...]      # ESO ladder (4, 5, 6)
+       measure_import.py --src PATH --id N     # arbitrary source file
+
+The published directory for a measured id is deleted and re-imported; do not
+point --id at an image you are not willing to rebuild.
 """
+import argparse
 import json
 import os
 import re
@@ -34,7 +41,7 @@ LADDER = [
 ]
 
 PHASE_MARKERS = [
-    ('mkdir -p "$tmp"\nvips dzsave', 'preflight_done'),
+    ('vips dzsave "$src" "$tmp/pyr"', 'preflight_done'),
     ('rm -f "$tmp/pyr.dzi"', 'dzsave_transform_done'),
     ('# Validate: every expected tile present exactly once', 'postpad_done'),
     ('# Size gate across every tile in one pass', 'nameset_done'),
@@ -150,8 +157,22 @@ def dir_bytes(p: Path) -> int:
 
 
 def main():
-    only = [int(a) for a in sys.argv[1:] if a.isdigit()]
-    ladder = [x for x in LADDER if not only or x[1] in only]
+    ap = argparse.ArgumentParser(description="Real-image import measurement harness")
+    ap.add_argument("ids", nargs="*", type=int, metavar="ladderId",
+                    help="ESO ladder ids to measure (default: all)")
+    ap.add_argument("--src", default=None, metavar="PATH",
+                    help="arbitrary source file (requires --id)")
+    ap.add_argument("--id", type=int, default=None, dest="img_id",
+                    help="image id for --src")
+    a = ap.parse_args()
+    if a.src and a.img_id is None:
+        ap.error("--src requires --id")
+    if a.src:
+        entries = [(Path(a.src), a.img_id, None, None, None)]
+    else:
+        entries = [(REPO / "data" / "sources" / name, iid, lvl, fin, tiles)
+                   for name, iid, lvl, fin, tiles in LADDER
+                   if not a.ids or iid in a.ids]
     tmpdir = Path(tempfile.mkdtemp(prefix="ultratile-measure-"))
     instrumented = tmpdir / "import_measured.sh"
     instrument(REPO / "scripts" / "import_vips.sh", instrumented)
@@ -161,8 +182,7 @@ def main():
     env["PATH"] = VIPS_BIN + ":" + env["PATH"]
 
     results = []
-    for name, img_id, exp_levels, exp_finest, exp_tiles in ladder:
-        src = REPO / "data" / "sources" / name
+    for src, img_id, exp_levels, exp_finest, exp_tiles in entries:
         if not src.is_file():
             raise SystemExit(f"missing source: {src}")
         target = REPO / "data" / "images" / str(img_id)
@@ -215,7 +235,7 @@ def main():
                     short += 1
 
         rec = {
-            "id": img_id, "rc": rc, "source": name,
+            "id": img_id, "rc": rc, "source": src.name,
             "src_bytes": src_bytes, "w": w, "h": h, "loader": loader,
             "bands": bands,
             "pixels": w * h, "raw_rgb_bytes": w * h * 3,

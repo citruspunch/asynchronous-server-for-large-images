@@ -15,12 +15,19 @@ Checks, per image:
     black starting at precisely the computed content offset (content top-left,
     pad right/bottom) -- this is what catches a wrong-side or wrong-width pad
   * a sample of interior tiles fully decoded (valid JPEG, not blank)
-  * no duplicate tile payloads within a level
+  * no duplicate tile payloads within a level (size-bucketed by default; see
+    --deep-md5)
   * horizontal/vertical seam gradient sanity on interior seams
 
-Usage: verify_pyramid.py <imageId> [<imageId> ...]
-       verify_pyramid.py --all
+Usage: verify_pyramid.py [--deep-md5] [--source PATH] <imageId> [<imageId> ...]
+       verify_pyramid.py [--deep-md5] --all
+
+--deep-md5 reads every tile to hash it (the historical behavior); the default
+only hashes tiles that share a size with another tile in the same level, which
+is a superset of all possible duplicates and avoids reading a 100 GB pyramid.
 """
+import argparse
+import functools
 import hashlib
 import json
 import os
@@ -29,6 +36,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# The verifier can run for an hour on a large pyramid; without flush, redirected
+# output shows nothing until the process exits. Make every print line-buffered.
+print = functools.partial(print, flush=True)
 
 REPO = Path(__file__).resolve().parent.parent
 IMAGES = REPO / "data" / "images"
@@ -69,8 +80,11 @@ def source_index():
     return _SRC_CACHE
 
 
-def resolve_source(img_id, meta):
-    """Find the source for an image by dimension match, then by the id map."""
+def resolve_source(img_id, meta, override=None):
+    """Find the source: explicit --source path, then dimension match, then id map."""
+    if override:
+        p = Path(override)
+        return p if p.is_file() else None
     if meta:
         hit = source_index().get((int(meta["w"]), int(meta["h"])))
         if hit:
@@ -157,7 +171,7 @@ def col_mean_px(data, x, y):
     return (data[i] + data[i + 1] + data[i + 2]) / 3.0
 
 
-def verify(img_id, deep_sample=40, seam_sample=12):
+def verify(img_id, deep_sample=40, seam_sample=12, deep_md5=False, source_override=None):
     print(f"\n=== image-{img_id} ===")
     mp0 = IMAGES / str(img_id) / "meta.json"
     meta0 = None
@@ -166,7 +180,7 @@ def verify(img_id, deep_sample=40, seam_sample=12):
             meta0 = json.loads(mp0.read_text())
         except Exception:
             meta0 = None
-    src = resolve_source(img_id, meta0)
+    src = resolve_source(img_id, meta0, source_override)
     name = src.name if src else None
     if not src:
         warn(f"no source found for image-{img_id} in {SOURCES} (searched by "
@@ -248,13 +262,16 @@ def verify(img_id, deep_sample=40, seam_sample=12):
             fail(f"level-{z} tile set mismatch: {len(expected)} expected, "
                  f"{len(actual)} present, missing={miss} extra={extra}")
 
-        # header dims + size gate for every tile in this level (batched)
+        # header dims + size gate for every tile in this level (batched). The
+        # sizes are kept for the duplicate pass below.
         bad_dim = []
         bad_size = []
+        tile_size = {}
         present = [ld / f"{tx}_{ty}.jpg" for ty in range(rows) for tx in range(cols)]
         present = [p for p in present if p.is_file()]
         for p in present:
             sz = p.stat().st_size
+            tile_size[p] = sz
             if sz <= 0 or sz > MAX_TILE_BYTES:
                 bad_size.append((p.name, sz))
         if present:
@@ -268,8 +285,20 @@ def verify(img_id, deep_sample=40, seam_sample=12):
         if bad_dim:
             fail(f"level-{z} non-512x512 tiles: {bad_dim[:4]}")
 
-        # duplicate payload detection
-        for p in sorted(ld.glob("*.jpg")):
+        # duplicate payload detection. Identical payloads imply identical file
+        # sizes, so unless --deep-md5, only tiles sharing a size with another
+        # tile in the same level can possibly be duplicates. That is a superset
+        # of the true duplicate set and avoids reading every tile: the full pass
+        # is 27 GB of reads on a 159k-tile pyramid.
+        all_tiles = sorted(ld.glob("*.jpg"))
+        if deep_md5:
+            candidates = all_tiles
+        else:
+            by_size = {}
+            for p in all_tiles:
+                by_size.setdefault(tile_size.get(p, p.stat().st_size), []).append(p)
+            candidates = [p for g in by_size.values() if len(g) > 1 for p in g]
+        for p in candidates:
             dg = hashlib.md5(p.read_bytes()).hexdigest()
             digests.setdefault(z, {}).setdefault(dg, []).append(p.name)
         for dg, names in digests.get(z, {}).items():
@@ -279,6 +308,8 @@ def verify(img_id, deep_sample=40, seam_sample=12):
                 if z == n and len(names) > 2:
                     warn(f"level-{z} {len(names)} tiles share a payload "
                          f"(e.g. {names[:3]}) -- plausible for uniform sky")
+        print(f"    info  level-{z}: {len(present)} tiles, md5 {len(candidates)}"
+              f"{' (deep)' if deep_md5 else ' (size-bucketed)'}")
 
         # EDGE tiles: full decode + pad geometry
         for ty in range(rows):
@@ -409,13 +440,21 @@ def verify(img_id, deep_sample=40, seam_sample=12):
 
 
 def main():
-    args = sys.argv[1:]
-    if not args or args[0] == "--all":
-        ids = sorted(SRC)
-    else:
-        ids = [int(a) for a in args]
+    ap = argparse.ArgumentParser(description="Exhaustive pyramid verifier")
+    ap.add_argument("ids", nargs="*", type=int, metavar="imageId",
+                    help="published image ids to verify")
+    ap.add_argument("--all", action="store_true",
+                    help="verify every id in the built-in source map (4, 5, 6)")
+    ap.add_argument("--deep-md5", action="store_true", dest="deep_md5",
+                    help="hash every tile (default: only tiles sharing a size)")
+    ap.add_argument("--source", default=None, metavar="PATH",
+                    help="explicit source file for a single image id")
+    a = ap.parse_args()
+    if a.source and len(a.ids) != 1:
+        ap.error("--source requires exactly one image id")
+    ids = sorted(SRC) if (a.all or not a.ids) else a.ids
     for i in ids:
-        verify(i)
+        verify(i, deep_md5=a.deep_md5, source_override=a.source)
     print(f"\n{'='*60}")
     print(f"FAILURES: {len(FAIL)}   WARNINGS: {len(WARN)}")
     for f in FAIL:
