@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "anti-ui-slop": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/anti-ui-slop/SKILL.md",
+      "computedHash": "b077eb8beaea0d913edef177c5e8d1dbdc10ad113b5703a35b0413fdd6fadac5"
+    },
     "presentation-creator": {
       "source": "getsentry/skills",
       "sourceType": "github",
