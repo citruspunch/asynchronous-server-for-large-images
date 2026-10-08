@@ -154,6 +154,10 @@ If you have no curl, the same two requests work from a browser address bar.
 
 ### With libvips, for anything real
 
+Sources are delivered as image files, not archives: if the image arrived
+compressed (for example a `.zip` holding a multi-GB PNG), extract it first,
+e.g. into `data/sources/`. The importer reads image files only.
+
 Inspect first. `vipsheader` reads image metadata without materializing the full
 decoded raster, so with the expected native loader this is normally cheap
 compared with the import itself. (It is not guaranteed to be cheap for every
@@ -179,7 +183,8 @@ scripts/import_vips.sh big.tif 7
 ```
 
 To run only the preflight — header read, feasibility, tile cap, and the space
-floor — without staging anything: `scripts/import_vips.sh --dry-run big.tif 7`.
+floor — without staging anything: `mise run import --dry-run big.tif 7` (raw
+form: `scripts/import_vips.sh --dry-run big.tif 7`).
 
 The script prints a feasibility line and a space check before it starts:
 
@@ -197,6 +202,32 @@ imported image-7 (40000x30131, 8 levels)
 
 If the target is already ready it prints `already-ready image-7` and exits 0
 without touching anything.
+
+### Replacing an existing image, including a demo (IDs 0 and 1)
+
+An import never overwrites: a ready `<root>/<id>/.ready` short-circuits to
+`already-ready image-<id>`. That applies to the startup demos as well as to any
+published image, so replacing one is deliberate:
+
+1. Stop the server.
+2. Remove the old directory. Demos and any pyramid you can rebuild are safe to
+   delete (`rm -rf data/images/0`); to keep something for inspection, quarantine
+   instead: `mv data/images/7 "data/images/.stale-7-replaced-$(date +%s)"`.
+3. Import as above (`mise run import big.tif 1`, or the raw
+   `scripts/import_vips.sh big.tif 1`). The importer prints a `WARNING` for IDs
+   0 and 1 as a reminder of step 4.
+4. Do not start the server until the import publishes.
+
+Step 4 is specific to demo IDs. Startup demo-ensure regenerates a missing demo;
+it skips an ID whose `.tmp-<id>` staging exists, but the importer creates that
+staging only after its preflight. A server start inside that window regenerates
+the demo, and the import then refuses to publish over the target that appeared.
+Keeping the server down until the publish is the safe rule. Afterwards the real
+image occupies the ID and `/healthz` returns to 200; to restore a demo, delete
+the published directory and restart the server.
+
+Then verify the publication as described in
+[Verify a successful publication](#verify-a-successful-publication).
 
 ### Onto an external volume
 
@@ -297,9 +328,11 @@ integrity check use `verify_pyramid.py` (libvips required):
 python3 scripts/verify_pyramid.py 7
 ```
 
-That script has a hardcoded source map for images 4, 5, and 6. For another ID it
-reports `no source mapped` and stops, so it is only useful for the ESO ladder
-unless you edit its `SRC` table.
+That script resolves the source by matching `meta.json` dimensions against the
+readable files in `data/sources/`, so any image whose source is stored there is
+cross-checked against the original header. For a source elsewhere, pass
+`--source PATH`. Without a source it falls back to the published `meta.json` and
+warns that the header cross-check was skipped.
 
 ## Inspect disk usage
 
@@ -372,9 +405,10 @@ previously-ready image is never damaged, because a ready target short-circuits
 before anything else happens.
 
 If `dzsave` had already completed (`.tmp-7/.dzsave-done` exists), the faster
-path is `scripts/import_vips.sh --resume big.tif 7`, which skips the re-encode
-and finishes from the transform onward. Without the marker the resume refuses
-rather than trusting a partial staging tree.
+path is `mise run import --resume big.tif 7` (raw form:
+`scripts/import_vips.sh --resume big.tif 7`), which skips the re-encode and
+finishes from the transform onward. Without the marker the resume refuses rather
+than trusting a partial staging tree.
 
 ## Repair a corrupted published image
 

@@ -58,6 +58,9 @@ cd <repo> && ./build.sh
 
 ## 1. Inspect before importing anything
 
+Sources may arrive compressed: extract the archive to a volume with room before
+this step; the importer reads image files only.
+
 ```sh
 SRC=/path/to/evaluator.tif
 stat -f %z "$SRC"                                  # SOURCE BYTES (see caveat below)
