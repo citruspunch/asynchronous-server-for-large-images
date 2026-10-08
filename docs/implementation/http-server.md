@@ -111,14 +111,19 @@ of putting the gate first.
 
 | Path | Response | Cache-Control |
 | --- | --- | --- |
-| `/` | `index.html`, `text/html; charset=utf-8` | `public, max-age=3600` |
-| `/styles.css` | `styles.css`, `text/css; charset=utf-8` | `public, max-age=3600` |
+| `/` | `index.html`, `text/html; charset=utf-8` | `no-cache` |
+| `/styles.css` | `styles.css`, `text/css; charset=utf-8` | `no-cache` |
 | `/healthz` | `200 OK` or `503`, `text/plain` | `no-store` |
 | `/api/images` | `200`, `application/json` | `no-store` |
 | `/ws` | upgrade, or 400 / 403 | n/a |
-| `/js/*.js` | the file, `application/javascript; charset=utf-8` | `public, max-age=3600` |
+| `/js/*.js` | the file, `application/javascript; charset=utf-8` | `no-cache` |
 | `/api/images/<id>/info` | `200`, `application/json` | `no-store` |
 | anything else, or any path containing `..` | `404` | `no-store` |
+
+The web assets are `no-cache`, not a `max-age`: they are rebuilt with the jar,
+and a cached stylesheet once rendered a rebuilt viewer's new markup against the
+old CSS until the entry expired. There is no conditional-request support, so
+`no-cache` means a full re-fetch of a few KB per page load.
 
 The `..` check runs before the switch, so a traversal attempt is a 404 rather
 than reaching a handler. The `/js/` rule requires the prefix and the `.js`

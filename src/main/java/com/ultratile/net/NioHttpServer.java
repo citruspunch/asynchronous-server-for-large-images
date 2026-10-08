@@ -507,9 +507,9 @@ public final class NioHttpServer implements AutoCloseable {
             return;
         }
         switch (path) {
-            case "/" -> sendWeb(c, "index.html", "text/html; charset=utf-8", true);
+            case "/" -> sendWeb(c, "index.html", "text/html; charset=utf-8");
             case "/styles.css" -> sendWeb(c, "styles.css",
-                    "text/css; charset=utf-8", true);
+                    "text/css; charset=utf-8");
             case "/healthz" -> sendHealth(c);
             case "/api/images" -> sendImages(c);
             case "/ws" -> {
@@ -520,7 +520,7 @@ public final class NioHttpServer implements AutoCloseable {
             default -> {
                 if (path.startsWith("/js/") && path.endsWith(".js")) {
                     sendWeb(c, path.substring(1),
-                            "application/javascript; charset=utf-8", true);
+                            "application/javascript; charset=utf-8");
                 } else if (path.startsWith("/api/images/") && path.endsWith("/info")) {
                     sendInfo(c, path);
                 } else {
@@ -702,7 +702,7 @@ public final class NioHttpServer implements AutoCloseable {
         return sb.toString();
     }
 
-    private void sendWeb(SocketChannel c, String name, String mime, boolean cacheable)
+    private void sendWeb(SocketChannel c, String name, String mime)
             throws IOException {
         byte[] body = loadWeb(name);
         if (body == null) {
@@ -710,8 +710,12 @@ public final class NioHttpServer implements AutoCloseable {
                     "not found".getBytes(StandardCharsets.UTF_8));
             return;
         }
-        String cache = cacheable ? "public, max-age=3600" : "no-store";
-        sendSimple(c, 200, "OK", mime, body, cache);
+        // no-cache, not a max-age: the viewer is rebuilt with the jar, and a
+        // cached stylesheet once rendered a rebuilt page's new markup against
+        // the old CSS until the entry expired. There is no conditional-request
+        // support to make revalidation cheap, and these files are a few KB
+        // served from memory, so always re-fetching is the honest trade.
+        sendSimple(c, 200, "OK", mime, body, "no-cache");
     }
 
     private byte[] loadWeb(String name) {
