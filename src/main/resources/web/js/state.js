@@ -25,7 +25,7 @@ let retryNeeded = new Set();
 let terminalFailed = new Set();
 let receivedThisEpoch = new Set();
 let serverSkippedThisEpoch = new Set();
-let cache = new LfudaCache();
+let cache = new LfudaCache(MAX_CACHE, (key) => debugTileEvent(key, "gone"));
 let decodePipeline = new DecodePipeline();
 let avgTileBytes = AVG_TILE_SEED;
 let tileSamples = 0;
@@ -44,6 +44,13 @@ let lastReqId = 0;
 let infoAbort = null;
 let bootPromise = null;
 let intentTimer = 0;
+// Debug tile overlay (opt-in, presentation only): green flashes a tile just
+// admitted to the cache, red one the LFUDA policy evicted.
+let debugTiles = false;
+let tileFlashes = [];
+let flashTimer = 0;
+const TILE_FLASH_MS = 700;
+const TILE_FLASH_MAX = 256;
 
 function tileKey(imageId, z, x, y) {
   return imageId + ":" + z + ":" + x + ":" + y;

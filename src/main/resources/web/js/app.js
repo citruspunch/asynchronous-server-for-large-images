@@ -221,6 +221,25 @@ function setStatsOpen(open) {
   }
 }
 
+function setDebugTiles(on) {
+  debugTiles = !!on;
+  if (!debugTiles) {
+    tileFlashes = [];
+    if (flashTimer) {
+      clearTimeout(flashTimer);
+      flashTimer = 0;
+    }
+  }
+  const toggle = byId("debugToggle");
+  if (toggle) {
+    toggle.className = debugTiles ? "btn btn-icon on" : "btn btn-icon";
+    if (typeof toggle.setAttribute === "function") {
+      toggle.setAttribute("aria-expanded", debugTiles ? "true" : "false");
+    }
+  }
+  render();
+}
+
 function setBoot(state, text) {
   const overlay = byId("bootOverlay");
   const label = byId("bootText");
@@ -268,6 +287,7 @@ function installHandlers() {
     setStatsOpen(panel ? !!panel.hidden : true);
   });
   on(byId("statsClose"), "click", () => setStatsOpen(false));
+  on(byId("debugToggle"), "click", () => setDebugTiles(!debugTiles));
   const keyTarget = (typeof window !== "undefined") ? window : globalThis;
   on(keyTarget, "keydown", (e) => {
     if (e && e.key === "Escape") {

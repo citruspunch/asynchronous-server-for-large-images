@@ -63,6 +63,7 @@ function onDecodeResolved(item, bmp) {
   decodeCount += 1;
   if (item.epoch === viewEpoch) {
     cache.insert(item.key, bmp, {bytes: item.len, pin: item.z === 0, epoch: item.epoch});
+    debugTileEvent(item.key, "new");
     decodedBytes += item.len;
     const b = batches.get(item.reqId);
     if (b) {

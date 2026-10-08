@@ -23,7 +23,7 @@ reordering the tags would break the code.
 | 4 | `geometry.js` | Pyramid math, LOD selection, budgets, coverage, chunk runs |
 | 5 | `codec.js` | `encodeViewport`, `encodeCommit`, `encodeAbort`, `parseTileHeader`, `parseEnd` |
 | 6 | `epoch.js` | `newViewEpoch` cleanup and decode completion |
-| 7 | `render.js` | Canvas compositing, the status bar, and the stats values |
+| 7 | `render.js` | Canvas compositing, the status bar, the stats values, and the debug overlay |
 | 8 | `net.js` | Connection, the receive pipeline, END accounting |
 | 9 | `batches.js` | The network batch loop |
 | 10 | `app.js` | Boot, `selectImage`, input handlers, the `globalThis.UltraTile` seam |
@@ -738,10 +738,10 @@ Icons are Phosphor Icons (MIT), inlined as a local `<symbol>` sprite in
 viewer. The markup carries the layout and nothing else; no viewer logic reads
 it, and the sixteen `<b>` values stay raw numbers because the harness reads
 them numerically (`+hud.rxBytes.textContent`, and `hud.effZ` compared as a
-string). The toolbar controls (zoom out, the zoom readout, zoom in, Fit, and
-the stats toggle) are wired in `app.js`'s `installHandlers` and are presentation
-only: they call `zoomBy()`, `fitToView()` and `setStatsOpen()` and never touch
-the protocol path. The readout is the UTP zoom surfaced: `zoomZ` shows the
+string). The toolbar controls (zoom out, the zoom readout, zoom in, Fit, the
+stats toggle, and the debug toggle) are wired in `app.js`'s `installHandlers`
+and are presentation only: they call `zoomBy()`, `fitToView()`,
+`setStatsOpen()` and `setDebugTiles()` and never touch the protocol path. The readout is the UTP zoom surfaced: `zoomZ` shows the
 viewport zoom level the next CHUNK would carry (`zN`), `zoomPct` the resulting
 scale. The boot overlay (`#bootOverlay`) names a failed startup instead of
 leaving a black rectangle.
@@ -774,6 +774,24 @@ reported skipped counts once.
 
 `decodedBytes` is a payload counter, not a memory counter. The memory envelope is
 in [concurrency-and-memory.md](concurrency-and-memory.md).
+
+## Debug tile overlay
+
+The toolbar's bug button toggles an opt-in overlay that draws cache traffic on
+the canvas itself:
+
+- a **green** square flashes over a tile just admitted to the cache
+  (`debugTileEvent(key, "new")` from `onDecodeResolved`);
+- a **red** square flashes over a tile the LFUDA policy evicted (the same
+  function, called from the cache's `onEvict` hook).
+
+Both fade over `TILE_FLASH_MS` (700 ms) and the pending list is capped at
+`TILE_FLASH_MAX` (256); a short timer chain re-renders while any are active, so
+the fade costs a handful of frames and stops when the last one expires. Events
+are recorded only while the toggle is on, and the overlay never touches the
+protocol path or the counters. Flashes are drawn for the current image only, so
+an eviction of an off-screen tile — the usual LFUDA victim, since it is the
+oldest — is recorded but not visible on screen.
 
 ## The public seam
 

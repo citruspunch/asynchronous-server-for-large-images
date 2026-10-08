@@ -31,6 +31,54 @@ function resizeCanvas() {
   }
 }
 
+// ---- debug tile overlay (opt-in; never touches the protocol path) ----
+// Green marks a tile admitted to the cache, red one the LFUDA policy evicted.
+// Events are recorded only while the toolbar toggle is on; render() fades and
+// expires them, and a short timer chain drives the fade while any are active.
+function debugTileEvent(key, kind) {
+  if (!debugTiles) {
+    return;
+  }
+  let p = null;
+  try {
+    p = parseKey(key);
+  } catch (e) {
+    return;
+  }
+  if (!p || !Number.isFinite(p.imageId)) {
+    return;
+  }
+  const now = Date.now();
+  for (let i = 0; i < tileFlashes.length; i += 1) {
+    const f = tileFlashes[i];
+    if (f.imageId === p.imageId && f.z === p.z && f.x === p.x && f.y === p.y) {
+      tileFlashes[i] = {imageId: p.imageId, z: p.z, x: p.x, y: p.y, kind, at: now};
+      scheduleFlashRender();
+      return;
+    }
+  }
+  tileFlashes.push({imageId: p.imageId, z: p.z, x: p.x, y: p.y, kind, at: now});
+  if (tileFlashes.length > TILE_FLASH_MAX) {
+    tileFlashes.splice(0, tileFlashes.length - TILE_FLASH_MAX);
+  }
+  scheduleFlashRender();
+}
+
+function scheduleFlashRender() {
+  if (flashTimer) {
+    return;
+  }
+  flashTimer = setTimeout(() => {
+    flashTimer = 0;
+    const now = Date.now();
+    tileFlashes = tileFlashes.filter((f) => now - f.at < TILE_FLASH_MS);
+    render();
+    if (debugTiles && tileFlashes.length > 0) {
+      scheduleFlashRender();
+    }
+  }, 110);
+}
+
 function render() {
   const canvas = canvasEl();
   if (!canvas || typeof canvas.getContext !== "function") {
@@ -84,6 +132,35 @@ function render() {
       }
       const k = Math.pow(2, N - p.z);
       ctx.drawImage(e.bitmap, p.x * TILE * k, p.y * TILE * k, TILE * k, TILE * k);
+    }
+    if (debugTiles && tileFlashes.length > 0) {
+      const now = Date.now();
+      for (const f of tileFlashes) {
+        if (f.imageId !== currentImage.id) {
+          continue;
+        }
+        const age = now - f.at;
+        if (age < 0 || age >= TILE_FLASH_MS) {
+          continue;
+        }
+        const fk = Math.pow(2, N - f.z);
+        const fx = f.x * TILE * fk;
+        const fy = f.y * TILE * fk;
+        const fs = TILE * fk;
+        const alpha = 0.5 * (1 - age / TILE_FLASH_MS);
+        ctx.save();
+        ctx.globalAlpha = Math.max(0.08, alpha);
+        ctx.fillStyle = (f.kind === "new") ? "#22c55e" : "#ef4444";
+        ctx.fillRect(fx, fy, fs, fs);
+        if (typeof ctx.strokeRect === "function") {
+          ctx.globalAlpha = Math.min(1, 0.4 + alpha);
+          ctx.lineWidth = 2 / Math.max(camS, 1e-6);
+          ctx.strokeStyle = ctx.fillStyle;
+          ctx.strokeRect(fx + ctx.lineWidth / 2, fy + ctx.lineWidth / 2,
+            fs - ctx.lineWidth, fs - ctx.lineWidth);
+        }
+        ctx.restore();
+      }
     }
     ctx.restore();
   } catch (e) {
