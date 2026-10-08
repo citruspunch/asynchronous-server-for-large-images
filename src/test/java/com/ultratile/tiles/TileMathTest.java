@@ -191,6 +191,18 @@ class TileMathTest {
     }
 
     @Test
+    void importStagingBlocksDemoEnsure(@TempDir Path tmp) throws Exception {
+        Path staging = tmp.resolve(".tmp-0");
+        Files.createDirectories(staging);
+        Files.writeString(staging.resolve("sentinel"), "in progress");
+        ImageRegistry.ensureStartup(tmp);
+        assertTrue(Files.exists(staging), "live import staging must survive demo ensure");
+        assertTrue(Files.exists(staging.resolve("sentinel")), "staging contents must be untouched");
+        assertFalse(Files.exists(tmp.resolve("0")), "demo 0 must not be generated over a live import");
+        assertNotNull(new ImageRegistry(tmp).get(1), "the other demo is unaffected");
+    }
+
+    @Test
     void demoRepair(@TempDir Path tmp) throws Exception {
         Path zero = tmp.resolve("0");
         Files.createDirectories(zero);

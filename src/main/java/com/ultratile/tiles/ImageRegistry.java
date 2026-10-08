@@ -434,6 +434,17 @@ public final class ImageRegistry {
             int id = d[0];
             String canon = Integer.toString(id);
             Path target = base.resolve(canon);
+            Path staging = base.resolve(".tmp-" + canon);
+            if (Files.exists(staging)) {
+                // An import owns this id right now. Generating the demo would
+                // call IngestTool.recoverTmp, which moves the live staging
+                // aside, so leave the id alone and say so. A crashed import
+                // leaves the same marker; the next import of this id (or a
+                // manual rm) clears it.
+                LOG.warning("demo " + canon + " skipped: import staging "
+                        + staging.getFileName() + " exists");
+                continue;
+            }
             if (!Files.exists(target)) {
                 IngestTool.runSynthetic(base, canon, d[1], d[2]);
                 continue;

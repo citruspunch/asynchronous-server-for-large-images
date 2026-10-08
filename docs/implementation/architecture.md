@@ -47,7 +47,7 @@ Main
  ▼
 NioHttpServer
  │
- ├── ImageRegistry.ensureStartup(dataRoot)      quarantines, generates demos 0/1
+ ├── ImageRegistry.ensureStartup(dataRoot)      quarantines, ensures demos 0/1 (skips live .tmp-<id>)
  │                                                 (runs BEFORE the socket binds)
  ├── accept loop (one virtual thread)
  │     └── per connection: one virtual thread

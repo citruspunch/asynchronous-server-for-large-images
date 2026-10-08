@@ -250,7 +250,10 @@ bounded metadata read per call, which is irrelevant next to serving tiles.
 Startup repair lives in `ImageRegistry.ensureStartup(base)`: quarantine every
 numeric directory missing `.ready`, then ensure demos 0 and 1 per-ID. Demo repair
 is also per-ID, so a corrupt demo 0 does not disturb a valid demo 1, and custom
-IDs such as 7 are left completely alone.
+IDs such as 7 are left completely alone. A demo ID whose import staging
+(`.tmp-0`/`.tmp-1`) exists is skipped with a WARNING: generating the demo would
+move the live staging aside, so the id is left alone until the import publishes
+or the staging is removed.
 
 ## Edge padding
 
