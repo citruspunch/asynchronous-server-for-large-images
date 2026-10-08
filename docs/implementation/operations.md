@@ -126,6 +126,12 @@ Also at startup: any numeric directory without `.ready` is quarantined to
 validate is quarantined to `.stale-invalid-<id>-<epoch>/` and regenerated. Custom
 IDs are never touched by demo ensure.
 
+A demo ID with an import staging tree (`.tmp-0` or `.tmp-1`) present is skipped
+with a `WARNING`: generating the demo would move the live staging aside, so the
+server leaves that ID alone. While the staging exists, `/healthz` answers
+`503 not ready` for the missing demo; the import publishing (or removing the
+staging) clears the condition.
+
 ## Check it is up
 
 ```sh
@@ -171,6 +177,9 @@ refused.
 ```sh
 scripts/import_vips.sh big.tif 7
 ```
+
+To run only the preflight — header read, feasibility, tile cap, and the space
+floor — without staging anything: `scripts/import_vips.sh --dry-run big.tif 7`.
 
 The script prints a feasibility line and a space check before it starts:
 
@@ -233,6 +242,11 @@ not representative of real content (see [testing.md](testing.md#why-a-synthetic-
 # In another terminal: watch the staging tree grow and the level count.
 watch -n 5 'du -sh data/images/.tmp-7 2>/dev/null; ls data/images/.tmp-7 2>/dev/null | wc -l'
 ```
+
+The importer also keeps `data/images/.tmp-<id>/.progress` current with a single
+line (`phase=...` and the current level). Reading that one small file is cheap
+even when `du` and `ls` over a 100k-file level are slow or hung, so prefer it
+for monitoring; it is removed before publication.
 
 Or once, without watching:
 
@@ -356,6 +370,11 @@ It will quarantine any leftover `.tmp-7/` to `.stale-tmp-7-<epoch>/`, quarantine
 non-ready `7/` to `.stale-7-<epoch>/`, rebuild, validate, and publish. A
 previously-ready image is never damaged, because a ready target short-circuits
 before anything else happens.
+
+If `dzsave` had already completed (`.tmp-7/.dzsave-done` exists), the faster
+path is `scripts/import_vips.sh --resume big.tif 7`, which skips the re-encode
+and finishes from the transform onward. Without the marker the resume refuses
+rather than trusting a partial staging tree.
 
 ## Repair a corrupted published image
 
