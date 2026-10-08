@@ -7,42 +7,80 @@
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-<header>
+<header class="topbar">
 <div class="brand">
-<span class="mark" aria-hidden="true"></span>
-<h1>UltraTile</h1>
-<span id="status" class="busy">starting</span>
+<span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg></span>
+<span class="brand-text"><strong>UltraTile</strong><span>tiled image viewer</span></span>
 </div>
-<div class="controls">
-<label for="image">Image</label>
+<span class="toolbar-sep" aria-hidden="true"></span>
+<div class="field">
+<label class="sr-only" for="image">Image</label>
+<div class="select">
 <select id="image"></select>
+<svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
 </div>
-<span id="hud">
-<span title="Desired pyramid level from the current zoom. Compare with effZ.">lod <b id="lod">0</b></span>
-<span title="Effective level after the UNION_CAP budget. Below lod is a deliberate downgrade, not a fault.">effZ <b id="effZ">0</b></span>
-<span class="sep" title="TILE payload bytes received, duplicates included. Headers and framing are not counted.">rxBytes <b id="rxBytes">0</b></span>
-<span title="Payload bytes at cache insert. A payload counter, not bitmap memory.">decodedBytes <b id="decodedBytes">0</b></span>
-<span class="sep" title="Request IDs allocated since page load.">reqs <b id="reqs">0</b></span>
-<span title="Most recently allocated request ID.">gen <b id="gen">0</b></span>
-<span class="sep" title="LFUDA evictions. The cache is capped at 40 entries.">evicts <b id="evicts">0</b></span>
-<span title="Decoded bitmaps currently cached, out of 40.">cache <b id="cache">0</b></span>
-<span title="Viewport epochs satisfied by a tile already cached.">hits <b id="hits">0</b></span>
-<span title="Viewport epochs that needed a tile the cache did not hold, so it was re-fetched.">miss <b id="miss">0</b></span>
-<span title="LFUDA aging watermark. Above 0 means dynamic aging is driving eviction.">lfuAge <b id="lfuAge">0</b></span>
-<span class="sep" title="Decode queue length plus in-flight createImageBitmap calls.">decJobs <b id="decJobs">0</b></span>
-<span title="Bytes waiting in the decode queue.">decBytes <b id="decBytes">0</b></span>
-<span class="sep" title="Viewport epoch. Bumps on every pan, zoom, resize and image switch.">epoch <b id="epoch">0</b></span>
-<span class="sep" title="Network coverage: tiles received or server-skipped this epoch. This is the counter that matches the server.">netCov <b id="netCov">0</b></span>
-<span title="Coverage over the union of visible tiles at ALL levels while only one level is fetched, so it reads low by design. Nothing waits on it.">covCov <b id="covCov">0</b></span>
-</span>
+</div>
+<div class="spacer"></div>
+<div class="btn-group" role="group" aria-label="Zoom controls">
+<button type="button" id="zoomOut" class="btn btn-icon" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+<button type="button" id="zoomFit" class="btn" title="Fit image to view" aria-label="Fit image to view">Fit</button>
+<button type="button" id="zoomIn" class="btn btn-icon" title="Zoom in" aria-label="Zoom in"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button>
+</div>
+<span id="status" role="status" aria-live="polite">starting</span>
+<button type="button" id="statsToggle" class="btn btn-icon" title="Toggle statistics" aria-label="Toggle statistics" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg></button>
 </header>
 <main>
 <canvas id="view"></canvas>
+<div id="bootOverlay" class="boot">
+<div class="boot-card">
+<span class="spinner" aria-hidden="true"></span>
+<p id="bootText">Connecting to the tile server&hellip;</p>
+</div>
+</div>
+<div class="viewport-chip">
+<span id="infoImage">&mdash;</span>
+<span class="chip-dot" aria-hidden="true"></span>
+<span id="infoZoom">&mdash;</span>
+</div>
+<aside id="statsPanel" class="stats" hidden aria-label="Statistics">
+<div class="stats-head">
+<span class="stats-heading">Statistics</span>
+<button type="button" id="statsClose" class="btn btn-icon btn-sm" title="Close" aria-label="Close statistics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+</div>
+<section class="stats-group">
+<h2 class="stats-title">Viewport</h2>
+<div class="stat-row"><span class="stat-label" title="Desired pyramid level from the current zoom.">Level</span><span class="stat-value"><b id="lod">0</b></span></div>
+<div class="stat-row"><span class="stat-label" title="Effective level after the UNION_CAP budget. Below Level is a deliberate downgrade, not a fault.">Effective level</span><span class="stat-value"><b id="effZ">0</b></span></div>
+<div class="stat-row"><span class="stat-label" title="Viewport epoch. Bumps on every pan, zoom, resize and image switch.">Epoch</span><span class="stat-value"><b id="epoch">0</b></span></div>
+</section>
+<section class="stats-group">
+<h2 class="stats-title">Network</h2>
+<div class="stat-row"><span class="stat-label" title="TILE payload bytes received, duplicates included. Headers and framing are not counted.">Received</span><span class="stat-value"><b id="rxBytes">0</b><span class="stat-unit">B</span></span></div>
+<div class="stat-row"><span class="stat-label" title="Request IDs allocated since page load.">Requests</span><span class="stat-value"><b id="reqs">0</b></span></div>
+<div class="stat-row"><span class="stat-label" title="Most recently allocated request ID.">Generation</span><span class="stat-value"><b id="gen">0</b></span></div>
+<div class="stat-row"><span class="stat-label" title="Tiles received or server-skipped this epoch. This is the counter that matches the server.">Coverage</span><span class="stat-value"><b id="netCov">0</b></span></div>
+</section>
+<section class="stats-group">
+<h2 class="stats-title">Cache &middot; LFUDA-40</h2>
+<div class="stat-row"><span class="stat-label" title="Decoded bitmaps currently cached, out of 40.">Entries</span><span class="stat-value"><b id="cache">0</b><span class="stat-unit">/ 40</span></span></div>
+<div class="stat-row"><span class="stat-label" title="Viewport epochs satisfied by a tile already cached.">Epoch hits</span><span class="stat-value"><b id="hits">0</b></span></div>
+<div class="stat-row"><span class="stat-label" title="Viewport epochs that needed a tile the cache did not hold, so it was re-fetched.">Epoch misses</span><span class="stat-value"><b id="miss">0</b></span></div>
+<div class="stat-row"><span class="stat-label" title="LFUDA evictions. The cache is capped at 40 entries.">Evictions</span><span class="stat-value"><b id="evicts">0</b></span></div>
+<div class="stat-row"><span class="stat-label" title="LFUDA aging watermark. Above 0 means dynamic aging is driving eviction.">Age</span><span class="stat-value"><b id="lfuAge">0</b></span></div>
+</section>
+<section class="stats-group">
+<h2 class="stats-title">Decode</h2>
+<div class="stat-row"><span class="stat-label" title="Decode queue length plus in-flight createImageBitmap calls.">Jobs</span><span class="stat-value"><b id="decJobs">0</b></span></div>
+<div class="stat-row"><span class="stat-label" title="Bytes waiting in the decode queue.">Queued</span><span class="stat-value"><b id="decBytes">0</b><span class="stat-unit">B</span></span></div>
+<div class="stat-row"><span class="stat-label" title="Payload bytes at cache insert. A payload counter, not bitmap memory.">Decoded</span><span class="stat-value"><b id="decodedBytes">0</b><span class="stat-unit">B</span></span></div>
+<div class="stat-row"><span class="stat-label" title="Coverage over the union of visible tiles at ALL levels while only one level is fetched, so it reads low by design. Nothing waits on it.">Union coverage</span><span class="stat-value"><b id="covCov">0</b></span></div>
+</section>
+</aside>
 </main>
 <footer>
-<span><kbd>drag</kbd> pan</span>
-<span><kbd>wheel</kbd> zoom at cursor</span>
-<span class="dim">tiles arrive as binary WebSocket frames on /ws &mdash; there is no HTTP tile route, so the Network tab stays empty</span>
+<span><kbd>drag</kbd>pan</span>
+<span><kbd>wheel</kbd>zoom</span>
+<span class="footer-dim">binary tiles over WebSocket &mdash; no HTTP tile route</span>
 </footer>
 <script src="/js/constants.js" defer></script>
 <script src="/js/structures.js" defer></script>

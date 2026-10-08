@@ -160,6 +160,79 @@ async function boot() {
   return bootPromise;
 }
 
+// ---- UI controls (presentation only; the protocol path never reads them) ----
+function byId(id) {
+  try {
+    const d = globalThis.document;
+    return d && typeof d.getElementById === "function" ? d.getElementById(id) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function on(el, type, fn) {
+  if (el && typeof el.addEventListener === "function") {
+    el.addEventListener(type, fn);
+  }
+}
+
+// Zoom around the viewport centre: the same clamp the wheel handler applies,
+// with the pointer fixed at the middle, so camX/camY do not move.
+function zoomBy(factor) {
+  if (!Number.isFinite(factor) || factor <= 0) {
+    return;
+  }
+  const s2 = Math.min(SCALE_MAX, Math.max(SCALE_MIN, camS * factor));
+  if (!(camS > 0) || !(s2 > 0)) {
+    return;
+  }
+  camS = s2;
+  if (currentImage) {
+    camX = Math.min(currentImage.w, Math.max(0, camX));
+    camY = Math.min(currentImage.h, Math.max(0, camY));
+  }
+  render();
+  scheduleIntent();
+}
+
+function fitToView() {
+  if (!currentImage) {
+    return;
+  }
+  const cam = initialCamera(currentImage.w, currentImage.h, viewW, viewH);
+  camX = cam.x;
+  camY = cam.y;
+  camS = cam.s;
+  render();
+  scheduleIntent();
+}
+
+function setStatsOpen(open) {
+  const panel = byId("statsPanel");
+  if (panel) {
+    panel.hidden = !open;
+  }
+  const toggle = byId("statsToggle");
+  if (toggle) {
+    toggle.className = open ? "btn btn-icon on" : "btn btn-icon";
+    if (typeof toggle.setAttribute === "function") {
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+  }
+}
+
+function setBoot(state, text) {
+  const overlay = byId("bootOverlay");
+  const label = byId("bootText");
+  if (label && text) {
+    label.textContent = text;
+  }
+  if (overlay) {
+    overlay.hidden = state === "done";
+    overlay.className = state === "error" ? "boot boot-error" : "boot";
+  }
+}
+
 function installHandlers() {
   let d = null;
   try {
@@ -187,6 +260,20 @@ function installHandlers() {
       }
     });
   }
+  on(byId("zoomIn"), "click", () => zoomBy(1.4));
+  on(byId("zoomOut"), "click", () => zoomBy(1 / 1.4));
+  on(byId("zoomFit"), "click", () => fitToView());
+  on(byId("statsToggle"), "click", () => {
+    const panel = byId("statsPanel");
+    setStatsOpen(panel ? !!panel.hidden : true);
+  });
+  on(byId("statsClose"), "click", () => setStatsOpen(false));
+  const keyTarget = (typeof window !== "undefined") ? window : globalThis;
+  on(keyTarget, "keydown", (e) => {
+    if (e && e.key === "Escape") {
+      setStatsOpen(false);
+    }
+  });
   if (canvas && typeof canvas.addEventListener === "function") {
     const drag = {active: false, id: 0, lx: 0, ly: 0};
     canvas.addEventListener("pointerdown", (e) => {
@@ -312,10 +399,13 @@ if (typeof window !== "undefined" && typeof globalThis.document !== "undefined")
   setStatus("starting", "busy");
   boot().then(() => {
     setStatus("connected", "ok");
+    setBoot("done");
   }, (e) => {
     // A rejected boot is the difference between "working" and "a black
     // rectangle", so name the failure instead of failing silently.
-    setStatus("startup failed: " + (e && e.message ? e.message : String(e)), "bad");
+    const msg = "startup failed: " + (e && e.message ? e.message : String(e));
+    setStatus(msg, "bad");
+    setBoot("error", msg);
   });
 }
 

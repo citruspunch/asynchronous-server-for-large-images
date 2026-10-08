@@ -130,4 +130,10 @@ function updateHud() {
   set("gen", lastReqId);
   set("netCov", netCov());
   set("covCov", covCov().toFixed(3));
+  if (currentImage && Number.isFinite(camS) && camS > 0) {
+    set("infoImage", "image-" + currentImage.id + " · " + currentImage.w
+      + " × " + currentImage.h);
+    const pct = camS * 100;
+    set("infoZoom", (pct >= 10 ? Math.round(pct) : pct.toFixed(1)) + "%");
+  }
 }

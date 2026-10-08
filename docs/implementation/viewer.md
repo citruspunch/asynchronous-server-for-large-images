@@ -23,7 +23,7 @@ reordering the tags would break the code.
 | 4 | `geometry.js` | Pyramid math, LOD selection, budgets, coverage, chunk runs |
 | 5 | `codec.js` | `encodeViewport`, `encodeCommit`, `encodeAbort`, `parseTileHeader`, `parseEnd` |
 | 6 | `epoch.js` | `newViewEpoch` cleanup and decode completion |
-| 7 | `render.js` | Canvas compositing and the HUD |
+| 7 | `render.js` | Canvas compositing, the viewport chip, and the stats values |
 | 8 | `net.js` | Connection, the receive pipeline, END accounting |
 | 9 | `batches.js` | The network batch loop |
 | 10 | `app.js` | Boot, `selectImage`, input handlers, the `globalThis.UltraTile` seam |
@@ -88,7 +88,7 @@ The same block drives the `#status` pill in the header: `starting`, then
 `connected`, or `startup failed: <message>`. A rejected boot is the difference
 between a working viewer and a black rectangle, so the page states which
 happened instead of failing silently. It is also the one place a boot failure
-is visible at all, since `render()` never runs to paint the HUD.
+is visible at all, since `render()` never runs to paint the canvas and the stats.
 
 `connectWs()` builds `ws://<location.host>/ws`, which is same-origin by
 construction, offers the subprotocol `ultratile.utp.v1` as the second argument,
@@ -205,7 +205,7 @@ the old epoch's work through the normal epoch mechanism.
 Input handlers debounce at `INTENT_DEBOUNCE_MS` (80 ms) via `scheduleIntent()`,
 which coalesces a pointermove stream into one intent. The promise it returns has
 a `.catch()` attached purely for hygiene: the handlers fire-and-forget, and a
-protocol-fatal rejection is already surfaced through the HUD counters and
+protocol-fatal rejection is already surfaced through the stats counters and
 `failAllBatches`, so it must not become an unhandled rejection.
 
 ## Camera, level selection, and visible tiles
@@ -244,7 +244,7 @@ return {desired, effective: 0, downgraded: desired > 0}
 ```
 
 So a deep zoom that would need 400 tiles at the finest level is downgraded to a
-level that needs 36, and the HUD shows the downgrade as `lod` versus `effZ`. The
+level that needs 36, and the stats panel shows the downgrade as `lod` versus `effZ`. The
 pin of one zoom-0 generation per switch is a separate step and is not part of
 this calculation.
 
@@ -478,7 +478,7 @@ the current epoch. So a tile gains **at most one frequency per viewport epoch**,
 no matter how many internal paths ask. Rendering is a separate, non-accounting
 read: `render()` uses `peek(key)`, and `has(key)` is membership only. This
 matters because the browser redraws the same cached bitmap many times per pan,
-per animation frame and per HUD update; counting those would make frequency a
+per animation frame and per stats update; counting those would make frequency a
 redraw counter rather than a measure of useful reuse.
 
 **Victim selection.** When capacity pressure requires an eviction:
@@ -547,7 +547,7 @@ that always converges. `MAX_CACHE` is never exceeded under any of the tiers.
 an existing key closes the previous bitmap rather than leaking it. `clear()`
 closes every retained bitmap once and resets `age` to 0, since the watermark
 describes what the cache has held; `evicts`, `hits` and `misses` are cumulative
-and deliberately survive `clear()`, because the HUD and the tests read them
+and deliberately survive `clear()`, because the stats panel and the tests read them
 across an image switch. `selectImage()` calls `clear()`, so an image switch
 closes everything the previous image retained.
 
@@ -698,10 +698,11 @@ The whole body is wrapped so a failure degrades to a blank frame rather than an
 exception in a network callback. A harness test asserts `clearRect` runs before
 any tile draw.
 
-## HUD and counters
+## Stats panel and counters
 
-`updateHud()` writes sixteen fields, all `textContent` on `<b>` elements inside
-`#hud`:
+`updateHud()` writes sixteen counters into the Statistics panel
+(`#statsPanel`), hidden by default and toggled from the toolbar. Each counter
+is `textContent` on a `<b>` element:
 
 | Field | Meaning |
 | --- | --- |
@@ -725,29 +726,40 @@ any tile draw.
 `hits`, `miss` and `lfuAge` are the cache-policy diagnostics: `hits` against
 `miss` is the cache effectiveness of the policy, `miss` counts the tiles a
 viewport had to re-fetch, and `lfuAge` shows whether the aging watermark is
-moving. Per-entry frequency is deliberately not in the HUD; `cacheSnapshot()`
-exposes it for tests instead.
+moving. Per-entry frequency is deliberately not in the stats panel;
+`cacheSnapshot()` exposes it for tests instead.
 
-**The page shell is presentation only.** `styles.css` and the markup in
-`index.html` carry the layout and nothing else; no viewer logic reads them, and
-the sixteen `<b>` values stay raw numbers because the harness reads them
-numerically (`+hud.rxBytes.textContent`, and `hud.effZ` compared as a string).
-The body is a flex column with the header and footer as `flex: 0 0 auto` and
-`main` as `flex: 1; min-height: 0`, so the canvas takes the space the header
+**The page shell is presentation only.** `styles.css` implements a shadcn/ui
+style token system natively -- the zinc dark palette, `--radius`, and the
+muted/border/ring roles -- with no bundler, no CDN and no external font or icon
+request, consistent with the offline-clean rule the parity check enforces. The
+markup in `index.html` carries the layout and nothing else; no viewer logic
+reads it, and the sixteen `<b>` values stay raw numbers because the harness
+reads them numerically (`+hud.rxBytes.textContent`, and `hud.effZ` compared as
+a string). The toolbar controls (zoom out, Fit, zoom in, and the stats toggle)
+are wired in `app.js`'s `installHandlers` and are presentation only: they call
+`zoomBy()`, `fitToView()` and `setStatsOpen()` and never touch the protocol
+path. The boot overlay (`#bootOverlay`) names a failed startup instead of
+leaving a black rectangle, and the viewport chip (`#infoImage`, `#infoZoom`) is
+updated by `updateHud()` alongside the panel.
+
+The body is a flex column with the toolbar and footer as `flex: 0 0 auto` and
+`main` as `flex: 1; min-height: 0`, so the canvas takes the space the toolbar
 leaves rather than being pinned below a guessed offset. The offset approach was
-the old rule (`main { position: fixed; top: 3rem }`) and it was wrong: the HUD
-wraps onto a second line on an ordinary window, so 3rem was not the header
-height and the canvas overlapped it. `#view` is `position: absolute; inset: 0`
-inside a `position: relative` `main` so its box is always definite, which is
-what `resizeCanvas()` reads through `clientWidth`/`clientHeight` to size the
-backing store. Each HUD field also carries a `title` explaining what it counts
-and, for `effZ` and `covCov`, why a low value is correct rather than a fault.
-`covCov` is observational only and control flow never waits on it. It is worth
-knowing that it is computed over the union across every level `0..N` while only
-one effective level is being fetched, so in normal operation it reads low and is
-not a coverage failure indicator. `netCov` is the network-progress counter and is
-the one that matches what the server did. It also survives `BatchState` reclaim,
-since a key that was received and then reported skipped counts once.
+the old rule (`main { position: fixed; top: 3rem }`) and it was wrong: the
+toolbar wraps onto a second line on an ordinary window, so 3rem was not the
+header height and the canvas overlapped it. `#view` is `position: absolute;
+inset: 0` inside a `position: relative` `main` so its box is always definite,
+which is what `resizeCanvas()` reads through `clientWidth`/`clientHeight` to
+size the backing store. Each stat row also carries a `title` explaining what it
+counts and, for `effZ` and `covCov`, why a low value is correct rather than a
+fault. `covCov` is observational only and control flow never waits on it. It is
+worth knowing that it is computed over the union across every level `0..N`
+while only one effective level is being fetched, so in normal operation it
+reads low and is not a coverage failure indicator. `netCov` is the
+network-progress counter and is the one that matches what the server did. It
+also survives `BatchState` reclaim, since a key that was received and then
+reported skipped counts once.
 
 `decodedBytes` is a payload counter, not a memory counter. The memory envelope is
 in [concurrency-and-memory.md](concurrency-and-memory.md).
