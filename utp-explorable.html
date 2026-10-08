@@ -92,7 +92,7 @@ code.nowrap{white-space:nowrap}
 .level-row.on{border-color:var(--purple);box-shadow:0 0 0 2px var(--purple-bg)}
 .level-row .meta{font-size:.76rem;color:var(--muted)}
 .level-row .zlabel{font-weight:750;font-size:1.1rem;width:36px;color:var(--purple)}
-.minigrid{display:grid;gap:2px;max-width:100%}
+.minigrid{display:grid;gap:2px;max-width:100%;overflow:hidden}
 .minigrid i{display:block;width:9px;height:9px;border-radius:2px;background:var(--purple-bg);border:1px solid #c9bde0;flex:none}
 .level-row{min-width:0}
 .level-row .grow{flex:1;min-width:0}
@@ -242,7 +242,7 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:26px 0 0;font-si
     <div class="panel-head"><span>Viewport to desired versus effective level</span><span class="hint">drag to pan, scroll to zoom</span></div>
     <div class="hero-grid">
       <div><canvas id="worldCanvas" width="520" height="340" tabindex="0" role="img" aria-label="Overview of the image with the viewport rectangle"></canvas>
-        <p class="caption">Overview. The rectangle is the current viewport mapped into image pixels. <span class="mono" id="genBadge">generation reqId 1</span></p></div>
+        <p class="caption">Overview. The rectangle is the current viewport mapped into image pixels. <span class="mono" id="genBadge">simulated generation reqId 1</span></p></div>
       <div><canvas id="viewCanvas" width="520" height="325" tabindex="0" role="img" aria-label="Viewport contents with the requested tile grid at the effective level"></canvas>
         <div class="chips" id="heroChips"></div></div>
     </div>
@@ -281,7 +281,7 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:26px 0 0;font-si
     </div>
     <p class="mono" id="dgBanner" aria-live="polite" style="display:none"></p>
     <table class="table" style="margin-top:12px"><thead><tr><th>Level</th><th>Visible tiles</th></tr></thead><tbody id="unionBody"></tbody></table>
-    <p class="caption">Only missing tiles at the effective level are requested. Cached tiles, including the Z0 overview pinned at each image switch, are reused.</p>
+    <p class="caption">After loading the Z0 overview, the viewer requests missing tiles at the effective level. Cached tiles are reused.</p>
     <p class="caption" id="vpCaption"></p>
     <p class="caption" id="vpBytes"></p>
     <p class="caption">Illustrative network estimate for tiles at the effective level. Actual size depends on image content. Excludes protocol overhead. Not bitmap memory: one decoded 512 by 512 tile needs about 1 MiB.</p>
@@ -289,7 +289,7 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:26px 0 0;font-si
   <div class="panel"><div class="panel-head"><span>Union, protection, and progressive rendering</span></div>
     <div class="grid-2">
       <div>
-        <p style="font-size:.92rem">Four different sets. The complete pyramid is everything on disk. Tiles at the effective level intersect the viewport at display resolution. The visible union spans every level from Z0 up through effective. Only missing tiles at the effective level are requested, so the union sizes the working set and feeds cache protection. It is not a download list.</p>
+        <p style="font-size:.92rem">Four different sets. The complete pyramid is everything on disk. Tiles at the effective level intersect the viewport at display resolution. The union sizes the working set and feeds cache protection. It is not a download list.</p>
         <table class="table"><thead><tr><th>Level</th><th>Visible tiles</th></tr></thead><tbody>
         <tr><td>Z0</td><td>1</td></tr><tr><td>Z1</td><td>2</td></tr><tr><td>Z2</td><td>4</td></tr><tr><td>Z3</td><td>8</td></tr>
         <tr><td>Total union</td><td>15</td></tr>
@@ -298,7 +298,7 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:26px 0 0;font-si
       </div>
       <div>
         <p style="font-size:.92rem">Switching images pins one Z0 overview tile, so something renders immediately. Older coarse tiles stay cached and the renderer draws them underneath finer tiles. Sharper tiles replace their coarse parents as they arrive. This is fallback rendering, not prefetching. Cached levels are reused, never refetched in the same epoch.</p>
-        <p class="caption">Toggle "Show Z0 fallback underneath" in the demo above to preview the compositing. The real renderer draws every cached level, coarse under fine. Z0 is always cached.</p>
+        <p class="caption">Toggle "Show Z0 fallback underneath" in the demo above to preview the compositing. The real renderer draws every cached level, coarse under fine. The viewer loads and pins Z0 when an image is selected.</p>
       </div>
     </div>
   </div>
@@ -609,8 +609,10 @@ class Lfuda{
     for(let gy=gy0;gy<wt+CH/f;gy+=sp){const py=(gy-wt)*f;ctx.beginPath();ctx.moveTo(0,py);ctx.lineTo(CW,py);ctx.stroke();}}
   function drawWorld(){
     const f=Math.min(520/W,340/H),ox=(520-W*f)/2,oy=(340-H*f)/2;
-    paint(wx,0,0,f,520,340);
-    wx.fillStyle="rgba(232,228,216,0)";wx.fillRect(ox,oy,W*f,H*f);
+    wx.fillStyle="#dbe4f0";wx.fillRect(0,0,520,340);
+    wx.save();wx.beginPath();wx.rect(ox,oy,W*f,H*f);wx.clip();
+    paint(wx,-ox/f,-oy/f,f,520,340);
+    wx.restore();
     wx.strokeStyle="rgba(29,21,41,.35)";wx.strokeRect(ox+.5,oy+.5,W*f-1,H*f-1);
     const vw=VW.w/cam.s,vh=VW.h/cam.s;
     const rx=ox+(cam.x-vw/2)*f,ry=oy+(cam.y-vh/2)*f;
@@ -621,34 +623,83 @@ class Lfuda{
   function unionSize(E){const u=new Set();
     for(let Z=0;Z<=E;Z++){const vr=visRange(Z,W,H,N,cam,VW);for(const t of vr.keys)u.add(Z+":"+t.x+":"+t.y);}
     return u.size;}
+  let fbReveal=0,fbTimer=null,lastLod=null;
+  function centerOrder(keys){
+    let loX=1/0,hiX=-1/0,loY=1/0,hiY=-1/0;
+    for(const t of keys){loX=Math.min(loX,t.x);hiX=Math.max(hiX,t.x);loY=Math.min(loY,t.y);hiY=Math.max(hiY,t.y);}
+    const cx=(loX+hiX)/2,cy=(loY+hiY)/2;
+    return keys.slice().sort((a,b)=>((Math.abs(a.x-cx)+Math.abs(a.y-cy))-(Math.abs(b.x-cx)+Math.abs(b.y-cy)))||a.y-b.y||a.x-b.x);
+  }
+  function stopReveal(){if(fbTimer){clearInterval(fbTimer);fbTimer=null;}}
+  function startReveal(total){
+    stopReveal();fbReveal=0;
+    if(total<=0||!lastLod)return;
+    if(total===1){fbReveal=1;drawDetail(lastLod);return;}
+    const step=Math.max(40,Math.min(200,Math.round(2500/total)));
+    fbTimer=setInterval(()=>{
+      fbReveal++;
+      if(lastLod)drawDetail(lastLod);
+      if(fbReveal>=total)stopReveal();
+    },step);
+  }
   function drawDetail(lod){
+    lastLod=lod;
     const E=lod.effective,g=gridFor(W,H,N,E),v=visRange(E,W,H,N,cam,VW);
     const left=cam.x-VW.w/cam.s/2,top=cam.y-VW.h/cam.s/2;
     const c=DW/(VW.w/cam.s);
-    paint(vx,left,top,c,DW,DH);
     const ts=512*Math.pow(2,N-E);
-    if(showFallback&&E>0){
-      const z0=levelDims(W,H,N,0);
-      vx.fillStyle="rgba(29,21,41,0.20)";
-      vx.fillRect((0-left)*c,(0-top)*c,z0.w*c,z0.h*c);
-      vx.strokeStyle="rgba(29,21,41,.55)";vx.lineWidth=1.5;vx.setLineDash([5,4]);
-      vx.strokeRect((0-left)*c,(0-top)*c,z0.w*c,z0.h*c);vx.setLineDash([]);
-      vx.fillStyle="#1d1529";vx.font="11px system-ui";vx.textAlign="left";
-      vx.fillText("Z0 fallback underneath (illustrative)",8,DH-10);
+    const need=v.empty?[]:v.keys;
+    const IR={x:(0-left)*c,y:(0-top)*c,w:W*c,h:H*c};
+    vx.fillStyle="#dbe4f0";vx.fillRect(0,0,DW,DH);
+    vx.save();vx.beginPath();vx.rect(IR.x,IR.y,IR.w,IR.h);vx.clip();
+    paint(vx,left,top,c,DW,DH);
+    vx.restore();
+    function tileCanvas(t){
+      const X0=Math.max(t.x*ts,0),Y0=Math.max(t.y*ts,0);
+      const X1=Math.min((t.x+1)*ts,W),Y1=Math.min((t.y+1)*ts,H);
+      return {x:(X0-left)*c,y:(Y0-top)*c,w:(X1-X0)*c,h:(Y1-Y0)*c};
     }
-    const need=new Set((v.empty?[]:v.keys).map(t=>t.x+","+t.y));
     const xa=Math.max(0,Math.floor(left/ts)),xb=Math.min(g.cols-1,Math.ceil((left+VW.w/cam.s)/ts)-1);
     const ya=Math.max(0,Math.floor(top/ts)),yb=Math.min(g.rows-1,Math.ceil((top+VW.h/cam.s)/ts)-1);
+    if(showFallback&&E>0&&need.length){
+      const ordered=centerOrder(need);
+      const shown=ordered.slice(0,Math.min(fbReveal,ordered.length));
+      const shownSet=new Set(shown.map(t=>t.x+","+t.y));
+      vx.beginPath();
+      vx.rect(0,0,DW,DH);
+      for(const t of shown){const r=tileCanvas(t);vx.rect(r.x,r.y,r.w,r.h);}
+      vx.fillStyle="rgba(219,228,240,0.85)";
+      vx.fill("evenodd");
+      vx.strokeStyle="rgba(29,21,41,.55)";vx.lineWidth=1.5;vx.setLineDash([5,4]);
+      vx.strokeRect(IR.x,IR.y,IR.w,IR.h);vx.setLineDash([]);
+      vx.fillStyle="#1d1529";vx.font="11px system-ui";vx.textAlign="left";
+      vx.fillText("Z0 overview as coarse base (illustrative)",8,16);
+      for(const t of ordered){
+        if(shownSet.has(t.x+","+t.y))continue;
+        const r=tileCanvas(t);
+        vx.strokeStyle="rgba(84,74,168,.5)";vx.lineWidth=1;vx.setLineDash([3,3]);
+        vx.strokeRect(r.x+.5,r.y+.5,r.w-1,r.h-1);vx.setLineDash([]);
+      }
+      for(const t of shown){
+        const r=tileCanvas(t);
+        vx.strokeStyle="#544aa8";vx.lineWidth=2;vx.strokeRect(r.x+1,r.y+1,r.w-2,r.h-2);
+        if(Math.min(r.w,r.h)>46){vx.fillStyle="#1d1529";vx.font="600 12px ui-monospace,monospace";vx.textAlign="center";
+          vx.fillText("Z"+E+" "+t.x+","+t.y,r.x+r.w/2,r.y+r.h/2+4);}
+      }
+      vx.fillStyle="#4a4356";vx.font="11px system-ui";vx.textAlign="left";
+      vx.fillText("level Z"+E+" grid "+g.cols+" by "+g.rows+", footprint "+ts+" px",8,DH-8);
+      return;
+    }
     for(let y=ya;y<=yb;y++)for(let x=xa;x<=xb;x++){
-      const X=(x*ts-left)*c,Y=(y*ts-top)*c,S=ts*c;
-      if(need.has(x+","+y)){
-        vx.fillStyle="rgba(106,92,196,.5)";vx.fillRect(X,Y,S,S);
-        vx.strokeStyle="#544aa8";vx.lineWidth=2;vx.strokeRect(X+1,Y+1,S-2,S-2);
-        if(S>46){vx.fillStyle="#1d1529";vx.font="600 12px ui-monospace,monospace";vx.textAlign="center";
-          vx.fillText("Z"+E+" "+x+","+y,X+S/2,Y+S/2+4);}
+      const r=tileCanvas({x,y});
+      if(need.some(t=>t.x===x&&t.y===y)){
+        vx.fillStyle="rgba(106,92,196,.5)";vx.fillRect(r.x,r.y,r.w,r.h);
+        vx.strokeStyle="#544aa8";vx.lineWidth=2;vx.strokeRect(r.x+1,r.y+1,r.w-2,r.h-2);
+        if(Math.min(r.w,r.h)>46){vx.fillStyle="#1d1529";vx.font="600 12px ui-monospace,monospace";vx.textAlign="center";
+          vx.fillText("Z"+E+" "+x+","+y,r.x+r.w/2,r.y+r.h/2+4);}
       }else{
-        vx.fillStyle="rgba(230,225,240,.35)";vx.fillRect(X+1,Y+1,S-2,S-2);
-        vx.strokeStyle="rgba(84,74,168,.35)";vx.lineWidth=1;vx.strokeRect(X+.5,Y+.5,S-1,S-1);
+        vx.fillStyle="rgba(230,225,240,.35)";vx.fillRect(r.x+1,r.y+1,r.w-2,r.h-2);
+        vx.strokeStyle="rgba(84,74,168,.35)";vx.lineWidth=1;vx.strokeRect(r.x+.5,r.y+.5,r.w-1,r.h-1);
       }
     }
     vx.fillStyle="#4a4356";vx.font="11px system-ui";vx.textAlign="left";
@@ -677,15 +728,16 @@ class Lfuda{
     rows+="<tr><td>Union 0 to "+lod.effective+"</td><td>"+lod.union+"</td></tr>";
     $("unionBody").innerHTML=rows;
     $("vpCaption").textContent="Viewport "+VW.w+" by "+VW.h+", image "+W+" by "+H+" (N="+N+") at scale "+cam.s.toFixed(3)+".";
-    $("vpBytes").textContent="Estimated payload = "+count+" tiles at effective level × "+fmtBytes(per)+" assumed = "+fmtBytes(count*per)+" (illustrative, content dependent).";
+    $("vpBytes").textContent="Estimated JPEG payload = "+count+" tiles × "+fmtBytes(per)+" assumed = "+fmtBytes(count*per)+". Assumes all visible effective-level tiles need downloading (illustrative).";
     const chips=(v.empty?[]:v.keys).slice(0,10).map(t=>"Z"+lod.effective+" "+t.x+","+t.y);
     if(count>10)chips.push("+"+(count-10)+" more");
     $("heroChips").innerHTML=chips.map(c=>"<span class=\"chip\">"+c+"</span>").join("");
-    $("genBadge").textContent="generation reqId "+gen;
+    $("genBadge").textContent="simulated generation reqId "+gen;
     drawDetail(lod);
   }
   let raf=null,genTimer=null;
-  function render(){if(raf)return;raf=requestAnimationFrame(()=>{raf=null;clampCam();drawWorld();stats();});}
+  function render(){if(raf)return;raf=requestAnimationFrame(()=>{raf=null;clampCam();drawWorld();stats();
+    if(showFallback&&lastLod){const n=lastLod?visRange(lastLod.effective,W,H,N,cam,VW).keys.length:0;startReveal(n);}});}
   function bumpGen(){clearTimeout(genTimer);genTimer=setTimeout(()=>{gen++;stats();},220);}
   function bindDrag(cv,mode){
     let dragging=false,last=null;
@@ -719,8 +771,8 @@ class Lfuda{
   $("imgSel").addEventListener("change",e=>{const parts=e.target.value.split("x"),w=+parts[0],h=+parts[1];
     W=w;H=h;N=maxLevelFor(W,H);cam={x:W/2,y:H/2,s:fitScale()};gen++;syncSlider();renderList();render();});
   $("byteAssume").addEventListener("change",render);
-  $("vwSel").addEventListener("change",e=>{VW=VWS[e.target.value];sizeDetail();render();});
-  $("fbToggle").addEventListener("change",e=>{showFallback=e.target.checked;render();});
+  $("vwSel").addEventListener("change",e=>{VW=VWS[e.target.value];sizeDetail();bumpGen();render();});
+  $("fbToggle").addEventListener("change",e=>{showFallback=e.target.checked;if(!showFallback)stopReveal();render();});
   $("dgDemo").addEventListener("click",()=>{
     W=40000;H=30131;N=maxLevelFor(W,H);
     $("imgSel").value="40000x30131";
@@ -730,22 +782,23 @@ class Lfuda{
   $("vpReset").addEventListener("click",()=>{cam={x:W/2,y:H/2,s:fitScale()};gen++;syncSlider();render();});
   let selLevel=null;
   function renderList(){
+    if(selLevel===null||selLevel>N)selLevel=N;
     let html="";
     for(let z=N;z>=0;z--){const g=gridFor(W,H,N,z),tiles=g.cols*g.rows;
       const tag=z===N?"native":(z===0?"overview":"preview");
       const px=g.cols>24?Math.max(2,Math.floor(200/g.cols)):9;
-      let grid="";for(let i=0;i<tiles;i++)grid+="<i style=\"width:"+px+"px;height:"+px+"px\"></i>";
+      const shown=Math.min(tiles,400);
+      let grid="";for(let i=0;i<shown;i++)grid+="<i style=\"width:"+px+"px;height:"+px+"px\"></i>";
       html+="<div class=\"level-row"+(selLevel===z?" on":"")+"\" data-z=\""+z+"\" tabindex=\"0\" role=\"button\" aria-label=\"Level "+z+", "+g.cols+" by "+g.rows+" tiles\">"
         +"<span class=\"zlabel\">Z"+z+"</span>"
         +"<div class=\"minigrid\" style=\"grid-template-columns:repeat("+g.cols+","+px+"px)\" aria-hidden=\"true\">"+grid+"</div>"
         +"<div class=\"grow\"><div><span class=\"tag\">"+tag+"</span></div>"
-        +"<div class=\"meta\">"+nf(g.w)+" by "+nf(g.h)+" px, "+g.cols+" by "+g.rows+" tiles, "+tiles+" on disk</div></div></div>";}
+        +"<div class=\"meta\">"+nf(g.w)+" by "+nf(g.h)+" px, "+g.cols+" by "+g.rows+" tiles, "+tiles+" on disk"+(tiles>shown?", first "+shown+" shown":"")+"</div></div></div>";}
     $("levelList").innerHTML=html;
     const rows=document.querySelectorAll(".level-row");
     rows.forEach(r=>{const go=()=>{selLevel=parseInt(r.dataset.z,10);renderList();renderFormula();};
       r.addEventListener("click",go);
       r.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go();}});});
-    if(selLevel===null||selLevel>N)selLevel=N;
     renderFormula();
   }
   function renderFormula(){
