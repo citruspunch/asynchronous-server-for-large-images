@@ -16,11 +16,17 @@
 # authoritative build contract.
 set -euo pipefail
 
-# usage: import_vips.sh [--data-root <dir>] <src> <id>
+# usage: import_vips.sh [--data-root <dir>] [--resume] [--dry-run] <src> <id>
 # --data-root must match the server's --data-root (or its default) or the
 # pyramid lands where the server does not look. check_const_parity.py asserts
 # the two DEFAULTS agree; passing it here only changes this invocation.
+#
+# --resume continues an interrupted import whose dzsave already completed
+# (.tmp-<id>/.dzsave-done exists) instead of quarantining the staging tree and
+# re-encoding. --dry-run stops after the preflight checks, before any staging.
 data_root="data/images"
+resume=0
+dry_run=0
 positional=()
 while (( $# > 0 )); do
   case "$1" in
@@ -32,9 +38,17 @@ while (( $# > 0 )); do
       data_root="$2"
       shift 2
       ;;
+    --resume)
+      resume=1
+      shift
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
     --*)
       echo "unknown option: $1" >&2
-      echo "usage: import_vips.sh [--data-root <dir>] <src> <id>" >&2
+      echo "usage: import_vips.sh [--data-root <dir>] [--resume] [--dry-run] <src> <id>" >&2
       exit 2
       ;;
     *)
@@ -44,7 +58,7 @@ while (( $# > 0 )); do
   esac
 done
 if (( ${#positional[@]} != 2 )); then
-  echo "usage: import_vips.sh [--data-root <dir>] <src> <id>" >&2
+  echo "usage: import_vips.sh [--data-root <dir>] [--resume] [--dry-run] <src> <id>" >&2
   exit 2
 fi
 src="${positional[0]}"
@@ -121,9 +135,23 @@ if (( parsed < 0 || parsed > 65535 )); then
 fi
 canon="$parsed"
 
+if [[ "$canon" == "0" || "$canon" == "1" ]]; then
+  echo "WARNING: image-$canon is a startup demo id; do not start the server until this import publishes." >&2
+  echo "         Startup demo-ensure would quarantine .tmp-$canon and publish a synthetic demo instead." >&2
+fi
+
 base="$data_root"
 target="$base/$canon"
 tmp="$base/.tmp-$canon"
+total_t0=$SECONDS
+progress_file="$tmp/.progress"
+
+# One-line phase/status file for watchers. Directory traversals over a
+# 100k-file level are slow (and can hang entirely under load), so the importer
+# keeps this single small file current instead; read it, never `du` the tree.
+progress() {
+  printf 'phase=%s %s\n' "$1" "${2:-}" > "$progress_file" 2>/dev/null || true
+}
 
 # Preconditions. `vipsheader` is the pre-dimension gate and `vips` does the work.
 for tool in vips vipsheader; do
@@ -141,12 +169,25 @@ if [[ -e "$target/.ready" ]]; then
   echo "already-ready image-$canon"
   exit 0
 fi
-if [[ -e "$tmp" ]]; then
-  epoch="$(date +%s)"
-  mv "$tmp" "$base/.stale-tmp-$canon-$epoch"
-  echo "recovered leftover staging to .stale-tmp-$canon-$epoch"
+if (( resume )); then
+  if [[ ! -d "$tmp" ]]; then
+    echo "--resume: no staging tree at $tmp" >&2
+    exit 2
+  fi
+  if [[ ! -f "$tmp/.dzsave-done" ]]; then
+    echo "--resume: $tmp/.dzsave-done is missing; this staging is not resumable" >&2
+    echo "  (run without --resume to quarantine it and rebuild from scratch)" >&2
+    exit 2
+  fi
+  echo "resuming: dzsave already complete"
+else
+  if (( ! dry_run )) && [[ -e "$tmp" ]]; then
+    epoch="$(date +%s)"
+    mv "$tmp" "$base/.stale-tmp-$canon-$epoch"
+    echo "recovered leftover staging to .stale-tmp-$canon-$epoch"
+  fi
 fi
-if [[ -e "$target" ]]; then
+if (( ! dry_run )) && [[ -e "$target" ]]; then
   epoch="$(date +%s)"
   mv "$target" "$base/.stale-$canon-$epoch"
   echo "quarantined non-ready target to .stale-$canon-$epoch"
@@ -175,9 +216,9 @@ IMPORT_MAX_TILES=16777216
 #   MIN_TILE_BYTES  a hard FLOOR (4 KiB/tile). Refuses only what cannot possibly
 #                   fit. This part IS predictable: every tile is non-empty.
 #   PLAN_TILE_BYTES a PLANNING figure (128 KiB/tile), taken from the measured
-#                   median of the real ESO imports (128-147 KB). Warns when
-#                   headroom is thin; never refuses, because real content may
-#                   compress far better or far worse.
+#                   median of the real ESO imports (128-147 KB; a 93 GB PNG
+#                   import measured ~170 KB/tile, so treat it as content-
+#                   dependent). Warns when headroom is thin; never refuses.
 #
 # The gap between the tiers matters. At 4 KiB/tile a 45,252-tile image "needs"
 # 185 MB, so the hard floor alone would wave through an import whose real output
@@ -286,30 +327,64 @@ else
   echo "  (could not determine free space for $base; skipping space floor check)"
 fi
 
-mkdir -p "$tmp"
-vips dzsave "$src" "$tmp/pyr" --depth onetile --tile-size 512 --overlap 0 --skip-blanks -1 --suffix '.jpg[Q=85]'
+dzsave_s=0
+transform_s=0
+postpad_s=0
+validation_s=0
 
-# Transform the libvips output tree into the staged canonical tree. One `mv` per
-# chunk instead of one per file: the glob expands inside the shell, so a whole
-# level moves in a single process. A level can hold hundreds of thousands of
-# tiles, so chunk to stay clear of ARG_MAX.
+if (( dry_run )); then
+  echo "dry-run: preflight passed; nothing was staged"
+  exit 0
+fi
+
+if (( resume )); then
+  echo "resuming after dzsave; skipping re-encode"
+  progress dzsave "resumed (already complete)"
+else
+  mkdir -p "$tmp"
+  progress dzsave "start (${total_tiles} tiles)"
+  dzsave_t0=$SECONDS
+  vips dzsave "$src" "$tmp/pyr" --depth onetile --tile-size 512 --overlap 0 --skip-blanks -1 --suffix '.jpg[Q=85]'
+  touch "$tmp/.dzsave-done"
+  dzsave_s=$((SECONDS - dzsave_t0))
+  progress dzsave "done in ${dzsave_s}s"
+fi
+
+# Transform the libvips output tree into the staged canonical tree. Each
+# `pyr_files/<N>/` becomes `level-<N>/` with ONE directory rename: no tile is
+# touched individually, so the phase costs one metadata operation per level and
+# does not scale with the tile count. (The naive per-file form cost hours on a
+# USB HDD at 160k tiles; the rename is seconds.)
+#
+# A level directory must contain tiles only. The importer's own name-set check
+# tolerates extras, but verify_pyramid.py counts any extra file as unexpected,
+# so non-JPEG regular files (libvips metadata) are deleted, and an entry that is
+# not a regular file refuses the import instead of being deleted silently.
+transform_t0=$SECONDS
 for ndir in "$tmp"/pyr_files/*/; do
   [ -d "$ndir" ] || continue
+  ndir="${ndir%/}"
   n="$(basename "$ndir")"
-  mkdir -p "$tmp/level-$n"
-  chunk=()
-  for f in "$ndir"*.jpg; do
-    [ -f "$f" ] || continue
-    chunk+=("$f")
-    if (( ${#chunk[@]} >= 2000 )); then
-      mv ${chunk[@]+"${chunk[@]}"} "$tmp/level-$n/"
-      chunk=()
-    fi
-  done
-  if (( ${#chunk[@]} > 0 )); then
-    mv "${chunk[@]}" "$tmp/level-$n/"
+  dest="$tmp/level-$n"
+  progress transform "level-$n"
+  if [ -e "$dest" ]; then
+    echo "transform target already exists: $dest" >&2
+    exit 1
+  fi
+  mv "$ndir" "$dest"
+  bad="$(find "$dest" -mindepth 1 -maxdepth 1 ! -name '*.jpg' ! -type f -print -quit)"
+  if [ -n "$bad" ]; then
+    echo "unexpected non-file entry under $dest: $bad" >&2
+    exit 1
+  fi
+  extra="$(find "$dest" -mindepth 1 -maxdepth 1 -type f ! -name '*.jpg' -print)"
+  if [ -n "$extra" ]; then
+    echo "removing non-tile files from $dest:"
+    printf '%s\n' "$extra"
+    find "$dest" -mindepth 1 -maxdepth 1 -type f ! -name '*.jpg' -exec rm -f {} +
   fi
 done
+transform_s=$((SECONDS - transform_t0))
 rm -f "$tmp/pyr.dzi"
 rm -rf "$tmp/pyr_files"
 
@@ -408,10 +483,24 @@ probe_edges() {
   PROBE_FILES=(${edges[@]+"${edges[@]}"})
 }
 
+# A killed run can leave importer-internal *.pad.jpg scratch files behind (the
+# embed finished, its mv did not). Only a resumed staging can carry them, and
+# validation counts any extra file as a mismatch, so reclaim them first.
+if (( resume )); then
+  stale_pads="$(find "$tmp" -name '*.pad.jpg' -type f -print)"
+  if [ -n "$stale_pads" ]; then
+    echo "removing stray pad scratch files:"
+    printf '%s\n' "$stale_pads"
+    find "$tmp" -name '*.pad.jpg' -type f -exec rm -f {} +
+  fi
+fi
+
 # Post-pad pass: dzsave emits clipped edge extents; every staged tile must be
 # 512x512. Probe only edge tiles, in batches, and pad only the ones that are
 # genuinely short.
+postpad_t0=$SECONDS
 for (( z = 0; z <= depth_n; z++ )); do
+  progress postpad "level-$z"
   read -r lw lh cols rows <<< "$(level_geometry "$z")"
   probe_edges "$z" "$cols" "$rows"
   for (( i = 0; i < ${#PROBE_FILES[@]}; i++ )); do
@@ -423,6 +512,7 @@ for (( z = 0; z <= depth_n; z++ )); do
     vips embed "$tile" "$pad[Q=85]" 0 0 512 512 --extend black && mv "$pad" "$tile"
   done
 done
+postpad_s=$((SECONDS - postpad_t0))
 
 # Validate: every expected tile present exactly once, no extras, and within the
 # size gate. Name sets are compared per level with two sorts rather than a stat
@@ -430,8 +520,10 @@ done
 expected_list="$(mktemp)"
 actual_list="$(mktemp)"
 trap 'rm -f "$expected_list" "$actual_list"' EXIT
+validation_t0=$SECONDS
 
 for (( z = 0; z <= depth_n; z++ )); do
+  progress validate "name-set level-$z"
   read -r lw lh cols rows <<< "$(level_geometry "$z")"
   : > "$expected_list"
   for (( ty = 0; ty < rows; ty++ )); do
@@ -453,6 +545,7 @@ for (( z = 0; z <= depth_n; z++ )); do
 done
 
 # Size gate across every tile in one pass: reject empty or oversize JPEGs.
+progress validate "size-gate"
 empty_tile="$(find "$tmp" -name '*.jpg' -size -1c -print -quit)"
 if [[ -n "$empty_tile" ]]; then
   echo "empty tile: $empty_tile" >&2
@@ -468,6 +561,7 @@ fi
 # check above has already established that every expected tile exists, so here a
 # short tile means padding did not take effect.
 for (( z = 0; z <= depth_n; z++ )); do
+  progress validate "edge level-$z"
   read -r lw lh cols rows <<< "$(level_geometry "$z")"
   probe_edges "$z" "$cols" "$rows"
   for (( i = 0; i < ${#PROBE_FILES[@]}; i++ )); do
@@ -477,9 +571,16 @@ for (( z = 0; z <= depth_n; z++ )); do
     fi
   done
 done
+validation_s=$((SECONDS - validation_t0))
 
+rm -f "$tmp/.dzsave-done" "$tmp/.progress"
 printf '{"id":%s,"name":"image-%s","w":%s,"h":%s,"levels":%s,"tile":512}' "$canon" "$canon" "$w" "$h" "$levels" > "$tmp/meta.json"
 touch "$tmp/.ready"
+if [[ -e "$target" ]]; then
+  echo "refusing to publish: target appeared during import: $target" >&2
+  exit 1
+fi
 mv "$tmp" "$target"
 prune_stale_staging
 echo "imported image-$canon (${w}x${h}, $levels levels)"
+echo "timings: dzsave=${dzsave_s}s transform=${transform_s}s postpad=${postpad_s}s validation=${validation_s}s total=$((SECONDS - total_t0))s"
