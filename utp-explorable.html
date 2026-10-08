@@ -186,7 +186,6 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:26px 0 0;font-si
 <div class="progress" id="progress"></div>
 <header class="topbar">
   <div class="brand">
-    <svg viewBox="0 0 72 66" width="26" height="26" aria-hidden="true"><g transform="translate(11,11)"><path d="M29,2.26a4.67,4.67,0,0,0-8,0L14.42,13.53A32.21,32.21,0,0,1,32.17,40.19H27.55A27.68,27.68,0,0,0,12.09,17.47L6,28a15.92,15.92,0,0,1,9.23,12.17H4.62A.76.76,0,0,1,4,39.06l2.94-5a10.74,10.74,0,0,0-3.36-1.9l-2.91,5a4.54,4.54,0,0,0,1.69,6.24A4.66,4.66,0,0,0,4.62,44H19.15a19.4,19.4,0,0,0-8-17.31l2.31-4A23.87,23.87,0,0,1,23.76,44H36.07a35.88,35.88,0,0,0-16.41-31.8l4.67-8a.77.77,0,0,1,1.05-.27c.53.29,20.29,34.77,20.66,35.17a.76.76,0,0,1-.68,1.13H40.6q.09,1.91,0,3.81h4.78A4.59,4.59,0,0,0,50,39.43a4.49,4.49,0,0,0-.62-2.28Z" fill="currentColor"/></g></svg>
     <div><strong>UltraTile</strong><span>interactive technical explainer, UTP/1.0</span></div>
   </div>
   <nav id="nav" aria-label="Sections">
@@ -200,43 +199,54 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:26px 0 0;font-si
 
 <header class="masthead">
   <p class="kicker">Tiled image server, Java 21, custom protocol over WebSocket</p>
-  <h1>The browser never fetches the image.</h1>
-  <p class="lede">A source image can be tens of gigabytes, far too large to transfer or decode as one asset. UltraTile keeps the source on disk as a multiresolution pyramid of 512 by 512 JPEG tiles and sends only the tiles under the current viewport, at a resolution the browser can afford.</p>
-  <p class="lede">Normative wire behavior is defined by <code>docs/protocol/UTP-1.0.md</code>. This page is an explainer, not a specification.</p>
+  <h1>The browser never downloads the entire source image.</h1>
+  <p class="lede">A source image can be tens of gigabytes, far too large to transfer or decode as one asset. UltraTile keeps the source on disk as a multiresolution pyramid of 512 by 512 JPEG tiles. It requests only the tiles needed for viewing, at a resolution the browser can afford.</p>
+  <p class="lede"><code>docs/protocol/UTP-1.0.md</code> defines the normative wire behavior. This page is an explainer, not a specification.</p>
 </header>
 
 <section id="problem" class="block">
   <div class="section-head">
     <p class="kicker">01, Problem and system shape</p>
-    <h2>Why the whole image can never be the unit of transfer</h2>
-    <p class="lede">Downloading a multi-gigabyte raster would exhaust bandwidth, delay first paint, and overflow browser memory, mostly for pixels the user never looks at. The system therefore changes the unit of transfer from <em>the image</em> to <em>the visible tiles at a bounded resolution</em>.</p>
+    <h2>Why UltraTile transfers tiles instead of images</h2>
+    <p class="lede">A very large raster is impractical to download or decode as a single asset. Most of its pixels may never be viewed, yet the client would still pay the bandwidth, latency, and memory cost.</p>
+    <p class="lede">UltraTile therefore transfers only the tiles needed for the current viewport, at an appropriate resolution.</p>
   </div>
   <div class="flow pipe no-print-keep" role="list" aria-label="System flow, scroll sideways to follow all seven stages">
-    <div class="step" role="listitem"><span class="stage-num">1</span><b>Source image</b><span>Large TIFF on disk. Never served directly and never fully decoded at serve time.</span></div><div class="arr" aria-hidden="true">→</div>
-    <div class="step" role="listitem"><span class="stage-num">2</span><b>Importer</b><span>Demand driven processing into a 512 by 512 JPEG pyramid with padded edges and staged, atomic publication.</span></div><div class="arr" aria-hidden="true">→</div>
-    <div class="step" role="listitem"><span class="stage-num">3</span><b>Pyramid on disk</b><span>Canonical <code class="nowrap">level-Z/X_Y.jpg</code> tree plus <code class="nowrap">meta.json</code> and <code class="nowrap">.ready</code>. The only thing serving reads.</span></div><div class="arr" aria-hidden="true">→</div>
-    <div class="step" role="listitem"><span class="stage-num">4</span><b>Java server</b><span>HTTP bootstrap, then one WebSocket session per page. No HTTP tile route exists. Repeated requests reread tiles from disk. The JVM keeps no tile cache.</span></div><div class="arr" aria-hidden="true">→</div>
-    <div class="step" role="listitem"><span class="stage-num">5</span><b>HTTP bootstrap</b><span>Viewer shell, health and image metadata. Then <code class="nowrap">101 Switching Protocols</code> with subprotocol <code class="nowrap">ultratile.utp.v1</code>.</span></div><div class="arr" aria-hidden="true">→</div>
-    <div class="step" role="listitem"><span class="stage-num">6</span><b>WebSocket plus UTP</b><span>Five small binary messages. The client describes tile rectangles. The server streams tiles center first.</span></div><div class="arr" aria-hidden="true">→</div>
-    <div class="step" role="listitem"><span class="stage-num end">7</span><b>Bounded viewer</b><span>Decode pipeline and a 40 entry decoded bitmap cache. Memory stays flat while the image grows.</span></div>
+    <div class="step" role="listitem"><span class="stage-num">1</span><b>Source image</b><span>A large source image exists only as import input. It is never served directly or fully decoded while clients are viewing it.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num">2</span><b>Importer</b><span>The image is processed once into a multiresolution pyramid of 512 × 512 JPEG tiles. The importer generates the complete tile pyramid without needing to hold the entire decoded source image in memory at once.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num">3</span><b>Pyramid on disk</b><span>The resulting levels and metadata form the persistent representation used during serving. The original image is no longer part of the request path.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num">4</span><b>Java server</b><span>The server provides the viewer and metadata over HTTP, then handles each viewing session through WebSocket. Tiles are read from disk when requested. The server keeps no application-level tile cache.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num">5</span><b>HTTP bootstrap</b><span>HTTP loads the viewer, exposes image metadata, and upgrades the connection to WebSocket.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num">6</span><b>WebSocket + UTP</b><span>The client describes the tile regions it needs using UTP. The server responds with the corresponding tiles, prioritizing the center of the requested region.</span></div><div class="arr" aria-hidden="true">→</div>
+    <div class="step" role="listitem"><span class="stage-num end">7</span><b>Bounded viewer</b><span>The browser decodes incoming tiles through a bounded pipeline and keeps at most 40 decoded bitmaps in memory.</span></div>
   </div>
-  <div class="note">The browser owns the only decoded bitmap cache. Per-session server cost does not grow with image dimensions.</div>
+  <div class="note">The browser owns the decoded tile cache. Server memory per session remains bounded and does not grow with the dimensions of the source image.</div>
 </section>
 
 <section id="pyramid" class="block">
   <div class="section-head">
     <p class="kicker">02, Pyramid and selective viewing</p>
-    <h2>One viewport, a handful of tiles, at a bounded level</h2>
-    <p class="lede">Every level halves the previous one, rounding up. A chunk can only name whole tiles, so this fixed geometry is what makes selective transfer addressable. Drag the viewport and change scale to split the wanted level from the granted level and the union that forced it. <span class="pill">production rule</span></p>
+    <h2>Pyramid and selective viewing</h2>
+    <p class="lede">Fetch only the tiles needed for the current view, at the highest resolution that fits the cache budget. UltraTile stores each image at multiple resolutions. The viewer selects a resolution based on zoom, identifies the tiles intersecting the viewport, and lowers the resolution if the visible multilevel working set would exceed 36 tiles. Z0 always holds exactly one tile, even when its logical size is smaller than one tile: on the 40000 by 30131 image Z0 is 313 by 236 px, stored as a padded 512 by 512 JPEG. <span class="pill">production rule</span></p>
+  </div>
+  <div class="panel"><div class="panel-head"><span>Five definitions, each used once</span></div>
+    <dl class="kv">
+    <dt>Viewport</dt><dd>The portion of the image currently visible on screen.</dd>
+    <dt>Desired LOD</dt><dd>The pyramid level best suited to the current zoom.</dd>
+    <dt>Effective LOD</dt><dd>The highest level at or below Desired LOD whose visible multilevel working set fits within 36 tiles.</dd>
+    <dt>Visible Union</dt><dd>Distinct visible tile keys across levels Z0 through Effective LOD.</dd>
+    <dt>Tiles at Effective Level</dt><dd>Tiles intersecting the viewport at the resolution selected for display.</dd>
+    </dl>
   </div>
   <div class="panel">
     <div class="panel-head"><span>Viewport to desired versus effective level</span><span class="hint">drag to pan, scroll to zoom</span></div>
     <div class="hero-grid">
       <div><canvas id="worldCanvas" width="520" height="340" tabindex="0" role="img" aria-label="Overview of the image with the viewport rectangle"></canvas>
         <p class="caption">Overview. The rectangle is the current viewport mapped into image pixels. <span class="mono" id="genBadge">generation reqId 1</span></p></div>
-      <div><canvas id="viewCanvas" width="520" height="340" tabindex="0" role="img" aria-label="Requested tile grid at the effective level"></canvas>
+      <div><canvas id="viewCanvas" width="520" height="325" tabindex="0" role="img" aria-label="Viewport contents with the requested tile grid at the effective level"></canvas>
         <div class="chips" id="heroChips"></div></div>
     </div>
+    <p class="caption">Backgrounds are procedural stand-ins, not decoded tiles. Only tile boundaries and highlights follow the real geometry.</p>
     <div class="grid-2" style="margin-top:12px">
       <div class="row-btns no-print">
         <label class="ctl">Image<select id="imgSel">
@@ -244,27 +254,57 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:26px 0 0;font-si
           <option value="2048x2048">2048 by 2048 (demo geometry, N=2)</option>
           <option value="40000x30131">40000 by 30131 (real ladder geometry, N=7)</option>
         </select></label>
+        <label class="ctl">Viewport<select id="vwSel">
+          <option value="960x600" selected>960 by 600</option>
+          <option value="1920x1080">1920 by 1080</option>
+          <option value="3840x2160">3840 by 2160</option>
+        </select></label>
         <label class="ctl" style="flex:1">Scale (log)<input type="range" id="scaleSlider" min="-3" max="1.5" step="0.01" value="-0.6" aria-label="Viewport scale"></label>
         <button class="btn" id="vpReset">Reset</button>
+        <button class="btn pri" id="dgDemo">Demonstrate LOD downgrade</button>
       </div>
       <div class="row-btns no-print">
-        <label class="ctl">Payload assumption<select id="byteAssume">
-          <option value="147456" selected>Photographic median near 147 KB, illustrative</option>
-          <option value="16384">Synthetic gradient near 16 KB, illustrative</option>
+        <label class="ctl">Estimated JPEG size per tile<select id="byteAssume">
+          <option value="147456" selected>Photographic JPEG, 144 KiB per tile</option>
+          <option value="16384">Synthetic JPEG, 16 KiB per tile</option>
         </select></label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:.82rem;color:var(--muted)"><input type="checkbox" id="fbToggle" style="accent-color:var(--purple)"> Show Z0 fallback underneath</label>
       </div>
     </div>
+    <p class="mono" id="zoomInfo" aria-live="polite"></p>
+    <p class="caption">100% zoom shows level N, 75% still shows N, 50% drops to N minus 1. The switch happens near 70.71% zoom (1 divided by the square root of 2).</p>
     <div class="stats">
-      <div class="stat"><span class="big" id="stDesired">-</span><span>desired level (wants)</span></div>
-      <div class="stat"><span class="big" id="stEffective">-</span><span>effective level (gets)</span></div>
+      <div class="stat"><span class="big" id="stDesired">-</span><span>desired level</span></div>
+      <div class="stat"><span class="big" id="stEffective">-</span><span>effective level</span></div>
       <div class="stat"><span class="big" id="stUnion">-</span><span>visible union 0 to E (cap 36)</span></div>
-      <div class="stat"><span class="big" id="stTiles">-</span><span>tiles requested at E</span></div>
+      <div class="stat"><span class="big" id="stTiles">-</span><span>tiles at effective level</span></div>
     </div>
+    <p class="mono" id="dgBanner" aria-live="polite" style="display:none"></p>
+    <table class="table" style="margin-top:12px"><thead><tr><th>Level</th><th>Visible tiles</th></tr></thead><tbody id="unionBody"></tbody></table>
+    <p class="caption">Only missing tiles at the effective level are requested. Cached tiles, including the Z0 overview pinned at each image switch, are reused.</p>
     <p class="caption" id="vpCaption"></p>
     <p class="caption" id="vpBytes"></p>
+    <p class="caption">Illustrative network estimate for tiles at the effective level. Actual size depends on image content. Excludes protocol overhead. Not bitmap memory: one decoded 512 by 512 tile needs about 1 MiB.</p>
+  </div>
+  <div class="panel"><div class="panel-head"><span>Union, protection, and progressive rendering</span></div>
+    <div class="grid-2">
+      <div>
+        <p style="font-size:.92rem">Four different sets. The complete pyramid is everything on disk. Tiles at the effective level intersect the viewport at display resolution. The visible union spans every level from Z0 up through effective. Only missing tiles at the effective level are requested, so the union sizes the working set and feeds cache protection. It is not a download list.</p>
+        <table class="table"><thead><tr><th>Level</th><th>Visible tiles</th></tr></thead><tbody>
+        <tr><td>Z0</td><td>1</td></tr><tr><td>Z1</td><td>2</td></tr><tr><td>Z2</td><td>4</td></tr><tr><td>Z3</td><td>8</td></tr>
+        <tr><td>Total union</td><td>15</td></tr>
+        </tbody></table>
+        <p class="caption">Example viewport. Fifteen tiles form the working set, but only the eight at Z3 carry display resolution. The rest is fallback and protection context.</p>
+      </div>
+      <div>
+        <p style="font-size:.92rem">Switching images pins one Z0 overview tile, so something renders immediately. Older coarse tiles stay cached and the renderer draws them underneath finer tiles. Sharper tiles replace their coarse parents as they arrive. This is fallback rendering, not prefetching. Cached levels are reused, never refetched in the same epoch.</p>
+        <p class="caption">Toggle "Show Z0 fallback underneath" in the demo above to preview the compositing. The real renderer draws every cached level, coarse under fine. Z0 is always cached.</p>
+      </div>
+    </div>
   </div>
   <div class="grid-2" style="margin-top:14px;align-items:start">
-    <div class="panel"><div class="panel-head"><span>Pyramid levels</span><span class="hint">click a level</span></div><div id="levelList"></div></div>
+    <div class="panel"><div class="panel-head"><span>Pyramid levels</span><span class="hint">click a level</span></div><div id="levelList"></div>
+    <p class="caption">Finer levels form rectangular grids. Every stored tile is 512 by 512. Edge tiles carry black padding.</p></div>
     <div class="panel"><div class="panel-head"><span>Level math</span><span class="hint">updates with the selected level</span></div>
       <div class="formula" id="pyrFormula"></div>
       <div class="padfig">
@@ -323,7 +363,7 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:26px 0 0;font-si
   <div class="section-head">
     <p class="kicker">04, Concurrency and streaming</p>
     <h2>Two threads per session, zero bytes of tile cache</h2>
-    <p class="lede">The transport uses blocking I/O on Java 21 virtual threads, thread per session programming, not selector based nonblocking I/O. Tile bytes stream from <code>FileChannel</code> to the socket with no large intermediate copy, and per-session cost does not scale with image dimensions.</p>
+    <p class="lede">The transport uses blocking I/O on Java 21 virtual threads. That is thread per session programming, not selector based nonblocking I/O. Tile bytes stream from <code>FileChannel</code> to the socket with no large intermediate copy. Per-session cost does not scale with image dimensions.</p>
   </div>
   <div class="panel">
     <div class="panel-head"><span>Session shape (one WebSocket)</span><span><span class="badge c2s">reader virtual thread</span> <span class="badge s2c">dispatcher virtual thread</span></span></div>
@@ -354,7 +394,7 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:26px 0 0;font-si
   <div class="stages" aria-label="Ownership pipeline, select a stage for detail">
     <button class="st" data-stage="needed">needed</button><span class="a" aria-hidden="true">→</span><button class="st" data-stage="pending">pending</button><span class="a" aria-hidden="true">→</span><button class="st" data-stage="received">received</button><span class="a" aria-hidden="true">→</span><button class="st" data-stage="decode">decode queue</button><span class="a" aria-hidden="true">→</span><button class="st hot" data-stage="cached">cached (40 max)</button>
   </div>
-  <p class="caption" id="stageInfo" aria-live="polite" style="margin-top:0">Cached: decoded bitmaps under LFUDA-40, with viewport and z equal 0 protection.</p>
+  <p class="caption" id="stageInfo" aria-live="polite" style="margin-top:0">Cached tiles are decoded bitmaps under LFUDA-40, with viewport and z equal 0 protection.</p>
   <div class="grid-2">
     <div class="panel"><div class="panel-head"><span>Batch budget calculator</span><span class="pill">production rule</span></div>
       <label class="ctl">Free decode jobs (0 to 24)<input type="range" id="bJobs" min="0" max="24" value="18"></label>
@@ -428,7 +468,7 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:26px 0 0;font-si
         <dt>victim</dt><dd>Lowest priority among <em>eligible</em> entries. Ties break by oldest admission. Recency is never stored or consulted.</dd>
         <dt>aging</dt><dd><code>age is max(age, victim.priority)</code>. The <code>max</code> keeps a monotonic watermark under viewport protection. With no protection the victim is the global minimum and the rule is textbook LFUDA.</dd>
         <dt>protection</dt><dd>Current viewport target and the <code>z equal 0</code> overview pin decide <em>who may be evicted</em>. LFUDA decides <em>who loses</em>. Fallback tiers yield target protection, then pinning, rather than exceeding capacity. The just admitted tile is excluded from its own eviction.</dd>
-        <dt>eviction</dt><dd>Victim bitmap is explicitly <code>close()</code>d exactly once.</dd>
+        <dt>eviction</dt><dd>The cache closes the victim bitmap exactly once.</dd>
       </dl>
       <div class="note">Naive LFU pins historically popular tiles forever, so one hot region blocks the region in view. Aging bleeds old popularity off. A hot tile never referenced again is eventually displaced. LRU would let redraws dominate. Frequency across viewport epochs measures useful reuse instead.</div>
     </div>
@@ -528,9 +568,14 @@ class Lfuda{
 
 /* viewport demo with rich terrain */
 (function(){
-  const VW={w:960,h:600};
+  const VWS={"960x600":{w:960,h:600},"1920x1080":{w:1920,h:1080},"3840x2160":{w:3840,h:2160}};
+  let VW=VWS["960x600"];
   const wc=$("worldCanvas"),vc=$("viewCanvas");
-  const wx=setupCanvas(wc,520,340),vx=setupCanvas(vc,520,340);
+  const wx=setupCanvas(wc,520,340);
+  const DW=520;
+  let DH=Math.round(DW*VW.h/VW.w),showFallback=false;
+  let vx=setupCanvas(vc,DW,DH);
+  function sizeDetail(){DH=Math.round(DW*VW.h/VW.w);vx=setupCanvas(vc,DW,DH);}
   let W=4096,H=4096,N=maxLevelFor(W,H),gen=1;
   let cam={x:W/2,y:H/2,s:Math.min(VW.w/W,VW.h/H)};
   const world=(()=>{const r=rng(20260922),cs=[];
@@ -573,36 +618,66 @@ class Lfuda{
     wx.strokeStyle="#6a5cc4";wx.lineWidth=2;wx.strokeRect(rx,ry,vw*f,vh*f);
     wx._map={f,ox,oy};
   }
+  function unionSize(E){const u=new Set();
+    for(let Z=0;Z<=E;Z++){const vr=visRange(Z,W,H,N,cam,VW);for(const t of vr.keys)u.add(Z+":"+t.x+":"+t.y);}
+    return u.size;}
   function drawDetail(lod){
     const E=lod.effective,g=gridFor(W,H,N,E),v=visRange(E,W,H,N,cam,VW);
-    const factor=cam.s*520/VW.w;
-    paint(vx,cam.x-VW.w/cam.s/2,cam.y-VW.h/cam.s/2,factor,520,340);
-    const cw=520/g.cols,ch=340/g.rows;
-    vx.fillStyle="rgba(219,228,240,.0)";
-    for(let y=0;y<g.rows;y++)for(let x=0;x<g.cols;x++){
-      vx.fillStyle=(x+y)%2?"rgba(230,225,240,.55)":"rgba(217,211,234,.55)";
-      vx.fillRect(x*cw+1,y*ch+1,cw-2,ch-2);}
-    if(!v.empty){for(const t of v.keys){
-      vx.fillStyle="rgba(106,92,196,.5)";vx.fillRect(t.x*cw,t.y*ch,cw,ch);
-      vx.strokeStyle="#544aa8";vx.lineWidth=2;vx.strokeRect(t.x*cw+1,t.y*ch+1,cw-2,ch-2);}
-      vx.fillStyle="#1d1529";vx.font="600 12px ui-monospace,monospace";vx.textAlign="center";
-      for(const t of v.keys){if(cw>46)vx.fillText("Z"+E+" "+t.x+","+t.y,t.x*cw+cw/2,t.y*ch+ch/2);}}
+    const left=cam.x-VW.w/cam.s/2,top=cam.y-VW.h/cam.s/2;
+    const c=DW/(VW.w/cam.s);
+    paint(vx,left,top,c,DW,DH);
+    const ts=512*Math.pow(2,N-E);
+    if(showFallback&&E>0){
+      const z0=levelDims(W,H,N,0);
+      vx.fillStyle="rgba(29,21,41,0.20)";
+      vx.fillRect((0-left)*c,(0-top)*c,z0.w*c,z0.h*c);
+      vx.strokeStyle="rgba(29,21,41,.55)";vx.lineWidth=1.5;vx.setLineDash([5,4]);
+      vx.strokeRect((0-left)*c,(0-top)*c,z0.w*c,z0.h*c);vx.setLineDash([]);
+      vx.fillStyle="#1d1529";vx.font="11px system-ui";vx.textAlign="left";
+      vx.fillText("Z0 fallback underneath (illustrative)",8,DH-10);
+    }
+    const need=new Set((v.empty?[]:v.keys).map(t=>t.x+","+t.y));
+    const xa=Math.max(0,Math.floor(left/ts)),xb=Math.min(g.cols-1,Math.ceil((left+VW.w/cam.s)/ts)-1);
+    const ya=Math.max(0,Math.floor(top/ts)),yb=Math.min(g.rows-1,Math.ceil((top+VW.h/cam.s)/ts)-1);
+    for(let y=ya;y<=yb;y++)for(let x=xa;x<=xb;x++){
+      const X=(x*ts-left)*c,Y=(y*ts-top)*c,S=ts*c;
+      if(need.has(x+","+y)){
+        vx.fillStyle="rgba(106,92,196,.5)";vx.fillRect(X,Y,S,S);
+        vx.strokeStyle="#544aa8";vx.lineWidth=2;vx.strokeRect(X+1,Y+1,S-2,S-2);
+        if(S>46){vx.fillStyle="#1d1529";vx.font="600 12px ui-monospace,monospace";vx.textAlign="center";
+          vx.fillText("Z"+E+" "+x+","+y,X+S/2,Y+S/2+4);}
+      }else{
+        vx.fillStyle="rgba(230,225,240,.35)";vx.fillRect(X+1,Y+1,S-2,S-2);
+        vx.strokeStyle="rgba(84,74,168,.35)";vx.lineWidth=1;vx.strokeRect(X+.5,Y+.5,S-1,S-1);
+      }
+    }
     vx.fillStyle="#4a4356";vx.font="11px system-ui";vx.textAlign="left";
-    vx.fillText("level Z"+E+" grid "+g.cols+" by "+g.rows+", footprint "+(512*Math.pow(2,N-E))+" px",8,322);
+    vx.fillText("level Z"+E+" grid "+g.cols+" by "+g.rows+", footprint "+ts+" px",8,16);
   }
   function stats(){
+    const zf=clamp(N+Math.log2(cam.s),0,N);
     const desired=selectLevel(cam.s,W,H),lod=effectiveLOD(desired,W,H,N,cam,VW);
     const v=visRange(lod.effective,W,H,N,cam,VW),count=v.empty?0:v.keys.length;
     const per=parseInt($("byteAssume").value,10);
-    const tt=totalTiles(W,H),tot=tt.t;
     $("stDesired").textContent="Z"+lod.desired;$("stEffective").textContent="Z"+lod.effective;
     $("stUnion").textContent=lod.union+" / 36"+(lod.downgraded?" downgraded":" fits");
     $("stTiles").textContent=nf(count);
-    $("vpCaption").textContent="Image "+W+" by "+H+" (N="+N+"). Scale "+cam.s.toFixed(3)+" gives desired Z"+lod.desired+
-      (lod.downgraded?(", but the union past 36 across 0 to "+lod.desired+" forces Z"+lod.effective+" (union "+lod.union+"). Coarser pixels arrive sooner and the cache stays bounded.")
-      :(" fits within the 36 tile union at Z"+lod.effective+"."));
-    $("vpBytes").textContent="Illustrative transfer for this view. "+count+" tiles by "+fmtBytes(per)+
-      " is about "+fmtBytes(count*per)+" ("+nf(count)+" of "+nf(tot)+" tiles by count). Assumption above, JPEG sizes are content dependent.";
+    $("zoomInfo").textContent="s = "+cam.s.toFixed(3)+" gives zFloat = "+zf.toFixed(2)+", so desired is Z"+desired+". Level N holds while s stays at or above 0.70711.";
+    const banner=$("dgBanner");
+    if(lod.downgraded){
+      const ud=unionSize(lod.desired);
+      banner.style.display="";
+      banner.textContent="Desired Z"+lod.desired+" needs a union of "+ud+" tiles, past the 36-tile working-set limit, so the viewer uses Z"+lod.effective+" (union "+lod.union+").";
+    }else{banner.style.display="none";}
+    let rows="";
+    for(let Z=0;Z<=lod.effective;Z++){
+      const vr=visRange(Z,W,H,N,cam,VW);
+      rows+="<tr><td>Z"+Z+"</td><td>"+vr.keys.length+"</td></tr>";
+    }
+    rows+="<tr><td>Union 0 to "+lod.effective+"</td><td>"+lod.union+"</td></tr>";
+    $("unionBody").innerHTML=rows;
+    $("vpCaption").textContent="Viewport "+VW.w+" by "+VW.h+", image "+W+" by "+H+" (N="+N+") at scale "+cam.s.toFixed(3)+".";
+    $("vpBytes").textContent="Estimated payload = "+count+" tiles at effective level × "+fmtBytes(per)+" assumed = "+fmtBytes(count*per)+" (illustrative, content dependent).";
     const chips=(v.empty?[]:v.keys).slice(0,10).map(t=>"Z"+lod.effective+" "+t.x+","+t.y);
     if(count>10)chips.push("+"+(count-10)+" more");
     $("heroChips").innerHTML=chips.map(c=>"<span class=\"chip\">"+c+"</span>").join("");
@@ -615,25 +690,27 @@ class Lfuda{
   function bindDrag(cv,mode){
     let dragging=false,last=null;
     cv.addEventListener("pointerdown",e=>{dragging=true;const r=cv.getBoundingClientRect();
-      last={x:(e.clientX-r.left)*(520/r.width),y:(e.clientY-r.top)*(340/r.height)};
+      const chh=mode==="world"?340:DH;
+      last={x:(e.clientX-r.left)*(DW/r.width),y:(e.clientY-r.top)*(chh/r.height)};
       cv.setPointerCapture(e.pointerId);cv.style.cursor="grabbing";});
     cv.addEventListener("pointermove",e=>{if(!dragging)return;const r=cv.getBoundingClientRect();
-      const p={x:(e.clientX-r.left)*(520/r.width),y:(e.clientY-r.top)*(340/r.height)};
+      const chh=mode==="world"?340:DH;
+      const p={x:(e.clientX-r.left)*(DW/r.width),y:(e.clientY-r.top)*(chh/r.height)};
       const dx=p.x-last.x,dy=p.y-last.y;last=p;
       if(mode==="world"){const m=wx._map||{f:520/W};cam.x+=dx/m.f;cam.y+=dy/m.f;}
-      else{const f=cam.s*520/VW.w;cam.x-=dx/f;cam.y-=dy/f;}
+      else{const f=cam.s*DW/VW.w;cam.x-=dx/f;cam.y-=dy/f;}
       render();});
     const done=()=>{if(!dragging)return;dragging=false;cv.style.cursor="grab";bumpGen();};
     cv.addEventListener("pointerup",done);cv.addEventListener("pointercancel",done);
     cv.addEventListener("wheel",e=>{e.preventDefault();
       const before=cam.s;cam.s=clamp(cam.s*Math.exp(-e.deltaY*0.0012),SCALE_MIN,SCALE_MAX);
       if(mode==="view"&&cam.s!==before){const r=cv.getBoundingClientRect();
-        const p={x:(e.clientX-r.left)*(520/r.width),y:(e.clientY-r.top)*(340/r.height)};
-        const f0=before*520/VW.w;
+        const p={x:(e.clientX-r.left)*(DW/r.width),y:(e.clientY-r.top)*(DH/r.height)};
+        const f0=before*DW/VW.w;
         const wxp=cam.x-VW.w/before/2+p.x/f0,wyp=cam.y-VW.h/before/2+p.y/f0;
-        const f1=cam.s*520/VW.w;
+        const f1=cam.s*DW/VW.w;
         cam.x=wxp+VW.w/cam.s/2-p.x/f1;cam.y=wyp+VW.h/cam.s/2-p.y/f1;}
-      render();bumpGen();},{passive:false});
+      syncSlider();render();bumpGen();},{passive:false});
   }
   bindDrag(wc,"world");bindDrag(vc,"view");
   wc.style.cursor="grab";vc.style.cursor="grab";
@@ -642,6 +719,14 @@ class Lfuda{
   $("imgSel").addEventListener("change",e=>{const parts=e.target.value.split("x"),w=+parts[0],h=+parts[1];
     W=w;H=h;N=maxLevelFor(W,H);cam={x:W/2,y:H/2,s:fitScale()};gen++;syncSlider();renderList();render();});
   $("byteAssume").addEventListener("change",render);
+  $("vwSel").addEventListener("change",e=>{VW=VWS[e.target.value];sizeDetail();render();});
+  $("fbToggle").addEventListener("change",e=>{showFallback=e.target.checked;render();});
+  $("dgDemo").addEventListener("click",()=>{
+    W=40000;H=30131;N=maxLevelFor(W,H);
+    $("imgSel").value="40000x30131";
+    VW=VWS["3840x2160"];$("vwSel").value="3840x2160";sizeDetail();
+    cam={x:W/2,y:H/2,s:1.0};gen++;syncSlider();renderList();render();
+  });
   $("vpReset").addEventListener("click",()=>{cam={x:W/2,y:H/2,s:fitScale()};gen++;syncSlider();render();});
   let selLevel=null;
   function renderList(){
@@ -869,11 +954,11 @@ class Lfuda{
 /* pipeline stage selector */
 (function(){
   const INFO={
-    needed:"Needed: tiles the viewport wants this epoch, minus everything already owned or sidelined.",
-    pending:"Pending: requested over UTP and awaiting its TILE. Dropped the moment the tile arrives.",
-    received:"Received: payload arrived. Admitted to decode, or sidelined to retry or terminal.",
-    decode:"Decode queue: bounded at 24 jobs and 4 MiB. Overflow parks tiles in retryNeeded.",
-    cached:"Cached: decoded bitmaps under LFUDA-40, with viewport and z equal 0 protection."};
+    needed:"Needed tiles are what the viewport wants this epoch, minus everything already owned or sidelined.",
+    pending:"Pending tiles are requested over UTP and await their TILE. The entry drops the moment the tile arrives.",
+    received:"Received tiles have arrived. The viewer admits each to decode, or sidelines it to retry or terminal.",
+    decode:"The decode queue holds 24 jobs and 4 MiB. Overflow parks tiles in retryNeeded.",
+    cached:"Cached tiles are decoded bitmaps under LFUDA-40, with viewport and z equal 0 protection."};
   const btns=Array.from(document.querySelectorAll(".stages .st"));
   let pinned="cached";
   function show(key){btns.forEach(b=>b.classList.toggle("hot",b.dataset.stage===key));
